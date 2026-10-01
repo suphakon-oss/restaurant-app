@@ -1,10 +1,11 @@
 """
-api/index.py - Full REST API, RBAC Authentication, Real-Time SSE and Modern Responsive UI
-พร้อมหน้า Login/Register, แยกสิทธิ์การใช้งาน (Admin, Staff, Customer) และฟีเจอร์ครบ 100%
+api/index.py - REST API, RBAC Authentication, Real-Time SSE and Modern Responsive UI
+ปรับปรุง: ปิดแจ้งเตือนออเดอร์ฝั่งลูกค้า, ลูกค้ากดเรียกคิวไม่ได้, ตรวจสอบ Username/Password เข้มงวด
 """
 
 import json
 import asyncio
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -32,14 +33,18 @@ async def broadcast_event(event_type: str, data: dict):
 # ================= 1. Schemas สำหรับตรวจสอบข้อมูล (Validation) =================
 
 class LoginRequest(BaseModel):
-    username: str = Field(..., min_length=3)
-    password: str = Field(..., min_length=4)
+    username: str
+    password: str
 
 class RegisterRequest(BaseModel):
-    username: str = Field(..., min_length=3)
-    password: str = Field(..., min_length=4)
+    username: str
+    password: str
     name: str = Field(..., min_length=2)
-    role: str = Field(default="staff")
+    role: str = Field(default="customer")
+
+class TableCreateRequest(BaseModel):
+    table_id: Optional[int] = None
+    capacity: int = Field(default=4, gt=0)
 
 class MenuRecipeItem(BaseModel):
     ingredient_id: str
@@ -98,10 +103,18 @@ class InventoryItemRequest(BaseModel):
     unit: str = Field(..., min_length=1)
     min_stock: float = Field(default=10, ge=0)
 
-# ================= 2. Authentication APIs (RBAC) =================
+# ================= 2. Authentication APIs (RBAC & Regex Validation) =================
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
+    # ตรวจสอบเงื่อนไข Username (ภาษาอังกฤษและตัวเลขเท่านั้น)
+    if not re.match(r"^[a-zA-Z0-9]+$", req.username):
+        raise HTTPException(status_code=400, detail="ชื่อผู้ใช้ต้องเป็นตัวอักษรภาษาอังกฤษและตัวเลขเท่านั้น")
+
+    # ตรวจสอบเงื่อนไขรหัสผ่าน (6 ตัวขึ้นไป)
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร")
+
     db = load_db()
     user = next((u for u in db.get("users", []) if u["username"] == req.username), None)
     if not user or not verify_password(req.password, user["password_hash"], user["salt"]):
@@ -113,9 +126,17 @@ async def login(req: LoginRequest):
 
 @app.post("/api/auth/register")
 async def register(req: RegisterRequest):
+    # ตรวจสอบเงื่อนไข Username (ภาษาอังกฤษและตัวเลขเท่านั้น)
+    if not re.match(r"^[a-zA-Z0-9]+$", req.username):
+        raise HTTPException(status_code=400, detail="ชื่อผู้ใช้ต้องเป็นตัวอักษรภาษาอังกฤษและตัวเลขเท่านั้น")
+
+    # ตรวจสอบเงื่อนไขรหัสผ่าน (6 ตัวขึ้นไป)
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร")
+
     db = load_db()
     if any(u["username"] == req.username for u in db.get("users", [])):
-        raise HTTPException(status_code=400, detail="ชื่อผู้ใช้นี้มีในระบบแล้ว")
+        raise HTTPException(status_code=400, detail="ชื่อผู้ใช้นี้มีอยู่ในระบบแล้ว")
 
     h, s = hash_password(req.password)
     new_user = {
@@ -128,7 +149,7 @@ async def register(req: RegisterRequest):
     }
     db.setdefault("users", []).append(new_user)
     save_db(db)
-    add_audit_log("System", "REGISTER_USER", f"สมัครสมาชิกใหม่: {req.username} สิทธิ์ {new_user['role']}")
+    add_audit_log("System", "REGISTER_USER", f"สมัครสมาชิก: {req.username} สิทธิ์ {new_user['role']}")
     return {"success": True, "message": "ลงทะเบียนสำเร็จ"}
 
 # ================= 3. Real-Time Server-Sent Events (SSE) =================
@@ -199,6 +220,40 @@ def get_tables():
     db = load_db()
     return db.get("tables", [])
 
+@app.post("/api/tables")
+def create_table(req: TableCreateRequest):
+    db = load_db()
+    tables = db.setdefault("tables", [])
+    new_id = req.table_id if req.table_id else (max([t["table_id"] for t in tables], default=0) + 1)
+    
+    if any(t["table_id"] == new_id for t in tables):
+        raise HTTPException(status_code=400, detail=f"โต๊ะหมายเลข {new_id} มีอยู่ในระบบแล้ว")
+
+    new_table = {
+        "table_id": new_id,
+        "status": "ว่าง",
+        "capacity": req.capacity
+    }
+    tables.append(new_table)
+    add_audit_log("Staff", "ADD_TABLE", f"เพิ่มโต๊ะใหม่ หมายเลข {new_id} ({req.capacity} ที่นั่ง)")
+    save_db(db)
+    return {"success": True, "table": new_table}
+
+@app.delete("/api/tables/{table_id}")
+def delete_table(table_id: int):
+    db = load_db()
+    tables = db.get("tables", [])
+    table = next((t for t in tables if t["table_id"] == table_id), None)
+    if not table:
+        raise HTTPException(status_code=404, detail="ไม่พบโต๊ะ")
+    if table.get("status") != "ว่าง":
+        raise HTTPException(status_code=400, detail="ไม่สามารถลบโต๊ะที่มีลูกค้าหรือรอเช็คบิลได้")
+
+    db["tables"] = [t for t in tables if t["table_id"] != table_id]
+    add_audit_log("Admin", "DELETE_TABLE", f"ลบโต๊ะหมายเลข {table_id}")
+    save_db(db)
+    return {"success": True, "message": f"ลบโต๊ะหมายเลข {table_id} สำเร็จ"}
+
 @app.post("/api/table/move")
 def move_table_route(req: MoveTableRequest):
     ok, msg = services.move_table(req.from_table, req.to_table, "Staff")
@@ -213,7 +268,7 @@ def merge_table_route(req: MergeTableRequest):
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
 
-# ================= 6. สั่งอาหาร & จอครัว (KDS + Auto Stock Cut) =================
+# ================= 6. สั่งอาหาร & จอครัว (KDS) =================
 
 @app.get("/api/orders")
 def get_orders(table_id: Optional[int] = None):
@@ -468,7 +523,7 @@ def index():
   <div id="qr-modal" class="fixed inset-0 bg-black/60 z-50 hidden flex items-center justify-center p-4">
     <div class="bg-white rounded-2xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl">
       <h3 id="qr-modal-title" class="font-extrabold text-xl text-slate-800">QR Code สั่งอาหาร</h3>
-      <p class="text-xs text-slate-500">ให้ลูกค้านำมือถือมาสแกนเพื่อสั่งอาหารและระบุตัวเลือกเอง</p>
+      <p class="text-xs text-slate-500">สแกนเพื่อสั่งอาหารและระบุตัวเลือกได้ทันที</p>
       <div class="bg-slate-50 p-4 rounded-xl flex justify-center">
         <img id="qr-modal-img" src="" alt="Table QR" class="w-48 h-48 border rounded-lg shadow-sm">
       </div>
@@ -484,7 +539,7 @@ def index():
           <i class="fa-solid fa-utensils"></i>
         </div>
         <h2 class="text-2xl font-black text-slate-800 tracking-tight">RESTRO PRO</h2>
-        <p class="text-xs text-slate-500">ระบบจัดการร้านอาหารอัจฉริยะ (Role-Based Access)</p>
+        <p class="text-xs text-slate-500">ระบบจัดการร้านอาหารอัจฉริยะ</p>
       </div>
 
       <!-- แท็บสลับ เข้าสู่ระบบ / สมัครสมาชิก -->
@@ -493,21 +548,21 @@ def index():
         <button id="auth-tab-reg" onclick="switchAuthTab('register')" class="flex-1 py-2 text-slate-400 hover:text-slate-600">สมัครสมาชิก</button>
       </div>
 
-      <!-- ฟอร์มเข้าสู่ระบบ -->
+      <!-- ฟอร์มเข้าสู่ระบบ (สะอาด ไม่มีข้อความบอกใบ้) -->
       <div id="form-login" class="space-y-4">
         <div>
-          <label class="text-xs font-bold text-slate-600 block mb-1">ชื่อผู้ใช้งาน (Username)</label>
-          <input type="text" id="login-user" placeholder="ระบุ username" class="w-full border border-slate-300 rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+          <label class="text-xs font-bold text-slate-600 block mb-1">ชื่อผู้ใช้งาน</label>
+          <input type="text" id="login-user" placeholder="Username" class="w-full border border-slate-300 rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
         </div>
         <div>
-          <label class="text-xs font-bold text-slate-600 block mb-1">รหัสผ่าน (Password)</label>
+          <label class="text-xs font-bold text-slate-600 block mb-1">รหัสผ่าน</label>
           <input type="password" id="login-pass" placeholder="••••••••" class="w-full border border-slate-300 rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
         </div>
         <button onclick="handleLogin()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl text-sm shadow-md shadow-blue-600/30 transition">เข้าสู่ระบบ</button>
 
-        <!-- แถบปุ่ม Quick Login เพื่อความสะดวกในการทดสอบ -->
+        <!-- แถบปุ่ม Quick Login -->
         <div class="pt-4 border-t space-y-2">
-          <p class="text-xs text-slate-400 text-center font-medium">⚡ ปุ่มทดสอบสิทธิ์ด่วน (ไม่ต้องพิมพ์รหัส):</p>
+          <p class="text-xs text-slate-400 text-center font-medium">⚡ ปุ่มทดสอบสิทธิ์ด่วน:</p>
           <div class="grid grid-cols-3 gap-2">
             <button onclick="quickLogin('admin', 'admin123')" class="bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 py-1.5 rounded-lg text-xs font-bold">👑 Admin</button>
             <button onclick="quickLogin('staff', 'staff123')" class="bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 py-1.5 rounded-lg text-xs font-bold">👔 Staff</button>
@@ -516,29 +571,29 @@ def index():
         </div>
       </div>
 
-      <!-- ฟอร์มสมัครสมาชิก -->
+      <!-- ฟอร์มสมัครสมาชิก (สะอาด ไม่มีข้อความบอกใบ้) -->
       <div id="form-register" class="space-y-4 hidden">
         <div>
-          <label class="text-xs font-bold text-slate-600 block mb-1">ชื่อ-นามสกุล / ชื่อร้าน</label>
-          <input type="text" id="reg-name" placeholder="เช่น สมคิด ค้าดี" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none">
+          <label class="text-xs font-bold text-slate-600 block mb-1">ชื่อ-นามสกุล</label>
+          <input type="text" id="reg-name" placeholder="ชื่อของคุณ" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none">
         </div>
         <div>
-          <label class="text-xs font-bold text-slate-600 block mb-1">ชื่อผู้ใช้งาน (Username)</label>
-          <input type="text" id="reg-user" placeholder="ภาษาอังกฤษหรือตัวเลข" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none">
+          <label class="text-xs font-bold text-slate-600 block mb-1">ชื่อผู้ใช้งาน</label>
+          <input type="text" id="reg-user" placeholder="Username" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none">
         </div>
         <div>
-          <label class="text-xs font-bold text-slate-600 block mb-1">รหัสผ่าน (Password)</label>
-          <input type="password" id="reg-pass" placeholder="อย่างน้อย 4 ตัวอักษร" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none">
+          <label class="text-xs font-bold text-slate-600 block mb-1">รหัสผ่าน</label>
+          <input type="password" id="reg-pass" placeholder="••••••••" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none">
         </div>
         <div>
-          <label class="text-xs font-bold text-slate-600 block mb-1">ระดับสิทธิ์ (Role)</label>
+          <label class="text-xs font-bold text-slate-600 block mb-1">ระดับสิทธิ์</label>
           <select id="reg-role" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none bg-white">
+            <option value="customer" selected>ลูกค้าทั่วไป (Customer)</option>
             <option value="staff">พนักงานหน้าร้าน (Staff)</option>
-            <option value="admin">ผู้ดูแลระบบสูงสุด (Admin)</option>
-            <option value="customer">ลูกค้าทั่วไป (Customer)</option>
+            <option value="admin">ผู้ดูแลระบบ (Admin)</option>
           </select>
         </div>
-        <button onclick="handleRegister()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl text-sm shadow-md transition">ลงทะเบียนสมาชิกใหม่</button>
+        <button onclick="handleRegister()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl text-sm shadow-md transition">ลงทะเบียน</button>
       </div>
     </div>
   </div>
@@ -549,7 +604,6 @@ def index():
     <!-- Sidebar นำทาง -->
     <aside class="w-64 bg-slate-900 text-white flex flex-col justify-between p-4 shadow-2xl z-20">
       <div>
-        <!-- Profile User Card -->
         <div class="flex items-center gap-3 p-3 bg-slate-800/80 rounded-2xl border border-slate-700/60 mb-6">
           <div id="user-avatar" class="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center font-bold text-white text-base shadow-sm">U</div>
           <div class="flex-1 overflow-hidden">
@@ -559,23 +613,17 @@ def index():
         </div>
 
         <nav class="space-y-1 text-sm font-medium">
-          <!-- แท็บสำหรับ Admin -->
           <button onclick="switchTab('dash')" id="nav-dash" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-chart-pie w-5 text-blue-400"></i> Dashboard สรุป</button>
-          
-          <!-- แท็บสำหรับ Admin & Staff -->
           <button onclick="switchTab('tables')" id="nav-tables" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-chair w-5 text-emerald-400"></i> แผนผังโต๊ะ & POS</button>
           <button onclick="switchTab('kitchen')" id="nav-kitchen" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-fire-burner w-5 text-amber-400"></i> จอครัว (KDS)</button>
           <button onclick="switchTab('checkout')" id="nav-checkout" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-receipt w-5 text-indigo-400"></i> เช็คบิล / ใบเสร็จ</button>
           <button onclick="switchTab('inventory')" id="nav-inventory" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-boxes-stacked w-5 text-purple-400"></i> สต็อกวัตถุดิบ</button>
           <button onclick="switchTab('queue')" id="nav-queue" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-users-line w-5 text-pink-400"></i> คิว & จองโต๊ะ</button>
           <button onclick="switchTab('logs')" id="nav-logs" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-clock-rotate-left w-5 text-rose-400"></i> Audit Logs</button>
-
-          <!-- แท็บสำหรับ Customer (หรือเข้าดูได้ทุกคน) -->
           <button onclick="switchTab('qr')" id="nav-qr" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-mobile-screen w-5 text-teal-400"></i> ลูกค้าสั่งเอง (QR)</button>
         </nav>
       </div>
 
-      <!-- กล่องสถานะด้านล่าง & ปุ่ม Logout -->
       <div class="space-y-3 pt-4 border-t border-slate-800">
         <div class="flex items-center justify-between text-xs px-1 text-slate-400">
           <span class="flex items-center gap-2 text-emerald-400 font-semibold">
@@ -629,6 +677,9 @@ def index():
             <p class="text-xs text-slate-500">คลิกที่โต๊ะเพื่อรับออเดอร์ หรือกดปุ่ม QR เพื่อดูโค้ดสำหรับลูกค้า</p>
           </div>
           <div class="flex gap-2">
+            <button onclick="openAddTableModal()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3.5 py-2 rounded-xl font-bold shadow-sm transition flex items-center gap-1.5">
+              <i class="fa-solid fa-plus"></i> เพิ่มโต๊ะใหม่
+            </button>
             <button onclick="openMoveModal()" class="bg-amber-600 hover:bg-amber-700 text-white text-xs px-3 py-2 rounded-xl font-bold shadow-sm transition"><i class="fa-solid fa-arrows-split-up-and-left mr-1"></i> ย้ายโต๊ะ</button>
             <button onclick="openMergeModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2 rounded-xl font-bold shadow-sm transition"><i class="fa-solid fa-object-group mr-1"></i> รวมโต๊ะ</button>
           </div>
@@ -636,7 +687,6 @@ def index():
 
         <div id="tables-grid" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
 
-        <!-- กล่องจัดการรายการอาหารของโต๊ะที่เลือก -->
         <div id="table-order-box" class="hidden bg-white p-6 rounded-2xl border shadow-sm">
           <div class="flex justify-between items-center border-b pb-4 mb-4">
             <h3 id="selected-table-title" class="text-lg font-black text-slate-800">จัดการรายการอาหาร - โต๊ะ</h3>
@@ -853,7 +903,7 @@ def index():
     let currentTable = null;
     let cachedMenu = [];
 
-    // แสดงข้อความแจ้งเตือนแบบ Modern Floating Toast
+    // แสดงแจ้งเตือนแบบ Modern Floating Toast
     function showToast(msg, type = 'info') {
       const box = document.getElementById('toast-container');
       const toast = document.createElement('div');
@@ -872,7 +922,6 @@ def index():
       }, 3000);
     }
 
-    // สลับฟอร์ม Login / Register
     function switchAuthTab(type) {
       if(type === 'login') {
         document.getElementById('form-login').classList.remove('hidden');
@@ -887,7 +936,6 @@ def index():
       }
     }
 
-    // ล็อกอินด่วนสำหรับทดสอบ
     function quickLogin(u, p) {
       document.getElementById('login-user').value = u;
       document.getElementById('login-pass').value = p;
@@ -899,10 +947,25 @@ def index():
       showToast('เข้าใช้งานในโหมดลูกค้าเรียบร้อย', 'success');
     }
 
+    // ตรวจสอบเงื่อนไข Username (ภาษาอังกฤษและตัวเลขเท่านั้น) และ Password (6 ตัวขึ้นไป)
+    function validateAuthInputs(u, p) {
+      const userRegex = /^[a-zA-Z0-9]+$/;
+      if (!userRegex.test(u)) {
+        showToast('ชื่อผู้ใช้ต้องเป็นตัวอักษรภาษาอังกฤษและตัวเลขเท่านั้น (ห้ามใช้ภาษาไทย)', 'error');
+        return false;
+      }
+      if (p.length < 6) {
+        showToast('รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร', 'error');
+        return false;
+      }
+      return true;
+    }
+
     async function handleLogin() {
       const u = document.getElementById('login-user').value.trim();
       const p = document.getElementById('login-pass').value.trim();
       if(!u || !p) return showToast('กรุณากรอกข้อมูลให้ครบถ้วน', 'error');
+      if(!validateAuthInputs(u, p)) return;
 
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -919,18 +982,18 @@ def index():
     }
 
     async function handleRegister() {
-      const payload = {
-        name: document.getElementById('reg-name').value.trim(),
-        username: document.getElementById('reg-user').value.trim(),
-        password: document.getElementById('reg-pass').value.trim(),
-        role: document.getElementById('reg-role').value
-      };
-      if(!payload.name || !payload.username || !payload.password) return showToast('กรุณากรอกข้อมูลให้ครบ', 'error');
+      const name = document.getElementById('reg-name').value.trim();
+      const u = document.getElementById('reg-user').value.trim();
+      const p = document.getElementById('reg-pass').value.trim();
+      const role = document.getElementById('reg-role').value;
+
+      if(!name || !u || !p) return showToast('กรุณากรอกข้อมูลให้ครบถ้วน', 'error');
+      if(!validateAuthInputs(u, p)) return;
 
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ name: name, username: u, password: p, role: role })
       });
       const data = await res.json();
       if(res.ok) {
@@ -951,31 +1014,27 @@ def index():
       document.getElementById('user-role-badge').innerText = user.role.toUpperCase();
       document.getElementById('user-avatar').innerText = user.name.charAt(0);
 
-      // กรองแท็บเมนูตาม Role (RBAC)
       applyRolePermissions(user.role);
     }
 
     function applyRolePermissions(role) {
-      // ซ่อนเมนูทั้งหมดก่อน
       ['dash', 'tables', 'kitchen', 'checkout', 'inventory', 'queue', 'logs', 'qr'].forEach(t => {
         const btn = document.getElementById('nav-' + t);
         if(btn) btn.classList.add('hidden');
       });
 
       if(role === 'admin') {
-        // Admin เข้าได้ทุกแท็บ
         ['dash', 'tables', 'kitchen', 'checkout', 'inventory', 'queue', 'logs', 'qr'].forEach(t => {
           document.getElementById('nav-' + t).classList.remove('hidden');
         });
         switchTab('dash');
       } else if(role === 'staff') {
-        // Staff เข้าได้เฉพาะงานหน้าร้านและครัว
         ['tables', 'kitchen', 'checkout', 'inventory', 'queue'].forEach(t => {
           document.getElementById('nav-' + t).classList.remove('hidden');
         });
         switchTab('tables');
       } else {
-        // Customer สั่งเองและดูคิวได้
+        // Customer
         ['qr', 'queue'].forEach(t => {
           document.getElementById('nav-' + t).classList.remove('hidden');
         });
@@ -991,7 +1050,6 @@ def index():
       showToast('ออกจากระบบเรียบร้อย', 'info');
     }
 
-    // สลับแท็บหน้าทำงาน
     function switchTab(name) {
       document.querySelectorAll('main > section').forEach(s => s.classList.add('hidden'));
       document.querySelectorAll('aside nav button').forEach(b => {
@@ -1047,11 +1105,15 @@ def index():
       const grid = document.getElementById('tables-grid');
       grid.innerHTML = tables.map(t => {
         let col = t.status === 'ว่าง' ? 'border-emerald-300 bg-emerald-50/60 text-emerald-800' : (t.status === 'มีลูกค้า' ? 'border-rose-300 bg-rose-50/60 text-rose-800' : 'border-amber-300 bg-amber-50/60 text-amber-800');
+        let canDelete = t.status === 'ว่าง' && currentUser && currentUser.role === 'admin';
         return `
           <div class="p-5 rounded-2xl border-2 ${col} shadow-sm relative group">
             <div class="flex justify-between items-center mb-2">
               <h4 class="font-black text-lg">โต๊ะ ${t.table_id}</h4>
-              <span class="text-[10px] px-2 py-0.5 rounded-full font-extrabold bg-white shadow-sm">${t.status}</span>
+              <div class="flex items-center gap-1.5">
+                <span class="text-[10px] px-2 py-0.5 rounded-full font-extrabold bg-white shadow-sm">${t.status}</span>
+                ${canDelete ? `<button onclick="deleteTable(${t.table_id})" title="ลบโต๊ะนี้" class="text-slate-400 hover:text-rose-600 text-xs p-1"><i class="fa-solid fa-trash-can"></i></button>` : ''}
+              </div>
             </div>
             <p class="text-xs opacity-70">ความจุ ${t.capacity} ที่นั่ง</p>
             <div class="mt-4 flex gap-2">
@@ -1061,6 +1123,46 @@ def index():
           </div>
         `;
       }).join('');
+    }
+
+    async function openAddTableModal() {
+      const capStr = prompt('กรุณาระบุจำนวนที่นั่งสำหรับโต๊ะใหม่ (เช่น 2, 4, 6):', '4');
+      if (capStr !== null) {
+        const capacity = parseInt(capStr.trim());
+        if (isNaN(capacity) || capacity <= 0) {
+          return showToast('กรุณาระบุจำนวนที่นั่งเป็นตัวเลขมากกว่า 0', 'error');
+        }
+
+        const res = await fetch('/api/tables', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ capacity: capacity })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast(`เพิ่มโต๊ะหมายเลข ${data.table.table_id} สำเร็จ! (${capacity} ที่นั่ง)`, 'success');
+          loadTables();
+          loadCheckoutTables();
+          loadQrMenu();
+        } else {
+          showToast(data.detail || 'ไม่สามารถเพิ่มโต๊ะได้', 'error');
+        }
+      }
+    }
+
+    async function deleteTable(tid) {
+      if (!confirm(`คุณแน่ใจหรือไม่ว่าต้องการลบ "โต๊ะ ${tid}" ออกจากระบบ?`)) return;
+
+      const res = await fetch(`/api/tables/${tid}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message, 'success');
+        loadTables();
+        loadCheckoutTables();
+        loadQrMenu();
+      } else {
+        showToast(data.detail || 'ไม่สามารถลบโต๊ะได้', 'error');
+      }
     }
 
     function showTableQr(tid) {
@@ -1172,27 +1274,36 @@ def index():
       }
     }
 
+    // ================= ระบบคิว (ลูกค้าไม่สามารถกดเรียกคิวได้) =================
     async function loadQueues() {
       const res = await fetch('/api/queues');
       const qs = await res.json();
+      
+      // ตรวจสอบว่าผู้ใช้มีสิทธิ์เรียกคิวหรือไม่ (เฉพาะ Admin และ Staff เท่านั้น)
+      const canCallQueue = currentUser && (currentUser.role === 'admin' || currentUser.role === 'staff');
+
       document.getElementById('queue-list').innerHTML = qs.filter(q => q.status === 'รอเรียก').map(q => `
         <div class="flex justify-between items-center p-2.5 bg-slate-50 rounded-xl border text-xs">
           <div><b class="text-blue-600">${q.queue_id}</b> : ${q.name} (${q.party_size} ท่าน)</div>
-          <button onclick="callQueue('${q.queue_id}')" class="bg-emerald-600 text-white text-[11px] px-2 py-1 rounded-lg font-bold">เรียกลูกค้า</button>
+          ${canCallQueue ? `<button onclick="callQueue('${q.queue_id}')" class="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] px-2.5 py-1 rounded-lg font-bold">เรียกลูกค้า</button>` : '<span class="text-amber-600 font-bold">รอเรียกคิว</span>'}
         </div>
       `).join('') || '<p class="text-xs text-slate-400">ไม่มีคิวค้างในขณะนี้</p>';
     }
 
     async function createQueueTicket() {
-      const name = document.getElementById('q-name').value;
+      const name = document.getElementById('q-name').value.trim();
       const size = parseInt(document.getElementById('q-size').value);
-      if(!name || !size) return showToast('กรุณากรอกข้อมูลให้ครบ', 'error');
-      await fetch('/api/queue/ticket', {
+      if(!name || !size || size <= 0) return showToast('กรุณากรอกข้อมูลและจำนวนคนให้ถูกต้อง', 'error');
+      
+      const res = await fetch('/api/queue/ticket', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ name: name, party_size: size })
       });
-      showToast('ออกบัตรคิวสำเร็จ', 'success');
+      const data = await res.json();
+      showToast(`ออกบัตรคิวสำเร็จ! หมายเลขของคุณคือ ${data.queue_id}`, 'success');
+      document.getElementById('q-name').value = '';
+      document.getElementById('q-size').value = '';
       loadQueues();
     }
 
@@ -1204,13 +1315,13 @@ def index():
 
     async function createReservation() {
       const p = {
-        name: document.getElementById('res-name').value,
-        phone: document.getElementById('res-phone').value,
+        name: document.getElementById('res-name').value.trim(),
+        phone: document.getElementById('res-phone').value.trim(),
         date: document.getElementById('res-date').value,
         time: document.getElementById('res-time').value,
         party_size: parseInt(document.getElementById('res-size').value)
       };
-      if(!p.name || !p.phone) return showToast('กรุณากรอกข้อมูลให้ครบถ้วน', 'error');
+      if(!p.name || !p.phone || isNaN(p.party_size)) return showToast('กรุณากรอกข้อมูลให้ครบถ้วน', 'error');
       await fetch('/api/reservations', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -1347,13 +1458,18 @@ def index():
       }
     }
 
-    // Real-Time Notification SSE
+    // ================= Real-Time Notification SSE =================
     const evt = new EventSource('/api/realtime');
     evt.onmessage = function(e) {
       const ev = JSON.parse(e.data);
       if(ev.type === 'NEW_ORDER') {
-        showToast(`🔔 โต๊ะ ${ev.data.table_id} มีออเดอร์ใหม่เข้ามา!`, 'info');
-        loadKitchenOrders();
+        // แจ้งเตือนเฉพาะ Staff และ Admin เท่านั้น (ฝั่งลูกค้าจะไม่เห็นการแจ้งเตือนนี้)
+        if (currentUser && currentUser.role !== 'customer') {
+          showToast(`🔔 โต๊ะ ${ev.data.table_id} มีออเดอร์ใหม่เข้ามา!`, 'info');
+          loadKitchenOrders();
+        }
+      } else if(ev.type === 'QUEUE_UPDATE') {
+        loadQueues();
       }
     };
 
@@ -1361,7 +1477,7 @@ def index():
       document.getElementById('live-clock').innerText = new Date().toLocaleTimeString('th-TH');
     }, 1000);
 
-    // ตรวจสอบสถานะการเข้าสู่ระบบเดิม
+    // ตรวจสอบสถานะเดิม
     const savedUser = localStorage.getItem('restro_user');
     if(savedUser) {
       setupSession(JSON.parse(savedUser));
