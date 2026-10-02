@@ -3,11 +3,29 @@ main.py - จุดเริ่มต้นโปรแกรม (Main Entry Poi
 มีระบบจัดการ Menu Loop (While), Try-Except และออกจากโปรแกรมได้อย่างปลอดภัย
 """
 
+import importlib.util
 import sys
 import threading
 from http.server import HTTPServer
+from pathlib import Path
+
 import storage
-import services
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+try:
+    import services
+except ModuleNotFoundError:
+    services_path = PROJECT_ROOT / "services.py"
+    if not services_path.exists():
+        raise
+    spec = importlib.util.spec_from_file_location("services", services_path)
+    if spec is None or spec.loader is None:
+        raise ModuleNotFoundError(f"Cannot load services module: {services_path}")
+    services = importlib.util.module_from_spec(spec)
+    sys.modules["services"] = services
+    spec.loader.exec_module(services)
+
 from server import RestaurantHandler
 
 PORT = 8000

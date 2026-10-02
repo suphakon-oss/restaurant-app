@@ -1,6 +1,6 @@
 """
 api/index.py - REST API, RBAC Authentication, Real-Time SSE and Modern Responsive UI
-ปรับปรุง: ปิดแจ้งเตือนออเดอร์ฝั่งลูกค้า, ลูกค้ากดเรียกคิวไม่ได้, ตรวจสอบ Username/Password เข้มงวด
+อัปเดต: สมัครสิทธิ์ลูกค้าเท่านั้น, แท็บดูเมนูอาหารสำหรับทุกสิทธิ์, สตาฟ/แอดมินเพิ่มเมนูได้, ตัดสต็อกสมบูรณ์
 """
 
 import json
@@ -40,7 +40,6 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
     name: str = Field(..., min_length=2)
-    role: str = Field(default="customer")
 
 class TableCreateRequest(BaseModel):
     table_id: Optional[int] = None
@@ -103,15 +102,13 @@ class InventoryItemRequest(BaseModel):
     unit: str = Field(..., min_length=1)
     min_stock: float = Field(default=10, ge=0)
 
-# ================= 2. Authentication APIs (RBAC & Regex Validation) =================
+# ================= 2. Authentication APIs (RBAC & บังคับลูกค้าทั่วไป) =================
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
-    # ตรวจสอบเงื่อนไข Username (ภาษาอังกฤษและตัวเลขเท่านั้น)
     if not re.match(r"^[a-zA-Z0-9]+$", req.username):
         raise HTTPException(status_code=400, detail="ชื่อผู้ใช้ต้องเป็นตัวอักษรภาษาอังกฤษและตัวเลขเท่านั้น")
 
-    # ตรวจสอบเงื่อนไขรหัสผ่าน (6 ตัวขึ้นไป)
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร")
 
@@ -126,11 +123,9 @@ async def login(req: LoginRequest):
 
 @app.post("/api/auth/register")
 async def register(req: RegisterRequest):
-    # ตรวจสอบเงื่อนไข Username (ภาษาอังกฤษและตัวเลขเท่านั้น)
     if not re.match(r"^[a-zA-Z0-9]+$", req.username):
         raise HTTPException(status_code=400, detail="ชื่อผู้ใช้ต้องเป็นตัวอักษรภาษาอังกฤษและตัวเลขเท่านั้น")
 
-    # ตรวจสอบเงื่อนไขรหัสผ่าน (6 ตัวขึ้นไป)
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร")
 
@@ -144,13 +139,13 @@ async def register(req: RegisterRequest):
         "username": req.username,
         "password_hash": h,
         "salt": s,
-        "role": req.role if req.role in ("admin", "staff", "customer") else "customer",
+        "role": "customer",  # บังคับสิทธิ์เป็นลูกค้าทั่วไปเท่านั้น 100%
         "name": req.name
     }
     db.setdefault("users", []).append(new_user)
     save_db(db)
-    add_audit_log("System", "REGISTER_USER", f"สมัครสมาชิก: {req.username} สิทธิ์ {new_user['role']}")
-    return {"success": True, "message": "ลงทะเบียนสำเร็จ"}
+    add_audit_log("System", "REGISTER_USER", f"สมัครสมาชิกลูกค้า: {req.username}")
+    return {"success": True, "message": "ลงทะเบียนสมาชิกลูกค้าสำเร็จ"}
 
 # ================= 3. Real-Time Server-Sent Events (SSE) =================
 
@@ -173,7 +168,7 @@ async def sse_notifications():
 # ================= 4. เมนูอาหาร & CRUD =================
 
 @app.get("/api/menu")
-def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: str = "asc", page: int = 1, limit: int = 12):
+def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: str = "asc", page: int = 1, limit: int = 50):
     db = load_db()
     items = db.get("menu", [])
     if category:
@@ -185,6 +180,7 @@ def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: 
 
 @app.post("/api/menu")
 def create_menu(req: MenuCreateRequest):
+    """เพิ่มเมนูใหม่ (สำหรับสิทธิ์ Staff และ Admin)"""
     db = load_db()
     new_id = max([m["id"] for m in db.get("menu", [])], default=0) + 1
     new_menu = {
@@ -196,9 +192,22 @@ def create_menu(req: MenuCreateRequest):
         "recipe": [r.dict() for r in req.recipe]
     }
     db.setdefault("menu", []).append(new_menu)
-    add_audit_log("Admin", "CREATE_MENU", f"เพิ่มเมนู: {req.name} ({req.price} ฿)")
+    add_audit_log("Staff", "CREATE_MENU", f"เพิ่มเมนูใหม่: {req.name} ({req.price} ฿)")
     save_db(db)
     return {"success": True, "menu": new_menu}
+
+@app.delete("/api/menu/{menu_id}")
+def delete_menu(menu_id: int):
+    """ลบเมนูอาหาร"""
+    db = load_db()
+    menu = next((m for m in db.get("menu", []) if m["id"] == menu_id), None)
+    if not menu:
+        raise HTTPException(status_code=404, detail="ไม่พบเมนู")
+
+    db["menu"] = [m for m in db["menu"] if m["id"] != menu_id]
+    add_audit_log("Staff", "DELETE_MENU", f"ลบเมนู: {menu['name']}")
+    save_db(db)
+    return {"success": True, "message": f"ลบเมนู '{menu['name']}' เรียบร้อย"}
 
 @app.post("/api/menu/{menu_id}/toggle")
 def toggle_menu_availability(menu_id: int):
@@ -268,7 +277,7 @@ def merge_table_route(req: MergeTableRequest):
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
 
-# ================= 6. สั่งอาหาร & จอครัว (KDS) =================
+# ================= 6. สั่งอาหาร & จอครัว (ตัดสต็อกทั้งตอนเริ่มทำและเสิร์ฟเสร็จ) =================
 
 @app.get("/api/orders")
 def get_orders(table_id: Optional[int] = None):
@@ -306,6 +315,7 @@ async def customer_order(req: CustomerOrderRequest):
             "qty": it.qty,
             "options": it.options.dict() if it.options else {},
             "status": "รอทำ",
+            "stock_deducted": False,  # ตัวบ่งชี้การตัดสต็อก
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         db.setdefault("orders", []).append(new_order)
@@ -318,19 +328,23 @@ async def customer_order(req: CustomerOrderRequest):
 
 @app.post("/api/kitchen/{order_id}/status")
 async def update_kitchen_order(order_id: int, status: str = Query(...)):
+    """อัปเดตสถานะออเดอร์ในครัว และตัดสต็อกเมื่อเริ่มทำหรือเสิร์ฟเสร็จ"""
     db = load_db()
     order = next((o for o in db.get("orders", []) if o["order_id"] == order_id), None)
     if not order:
         raise HTTPException(status_code=404, detail="ไม่พบรายการออเดอร์")
 
-    if status == "กำลังทำ" and order["status"] == "รอทำ":
-        ok, msg = services.deduct_stock_by_recipe(order["menu_id"], order["qty"], "Kitchen")
+    # ตัดสต็อกทันทีเมื่อสถานะเปลี่ยนเป็น "กำลังทำ" หรือ "เสิร์ฟแล้ว" (ถ้ายังไม่เคยตัดสต็อก)
+    if status in ("กำลังทำ", "เสิร์ฟแล้ว") and not order.get("stock_deducted", False):
+        ok, msg = services.deduct_stock_in_db(db, order["menu_id"], order["qty"], "Kitchen")
         if not ok:
             raise HTTPException(status_code=400, detail=msg)
+        order["stock_deducted"] = True
 
     order["status"] = status
     save_db(db)
     await broadcast_event("ORDER_STATUS_UPDATE", {"order_id": order_id, "status": status})
+    await broadcast_event("STOCK_UPDATE", {})  # แจ้งหน้าเว็บให้อัปเดตตัวเลขสต็อกทันที
     return {"success": True, "status": status}
 
 # ================= 7. สต็อกวัตถุดิบ (Inventory CRUD) =================
@@ -363,7 +377,7 @@ def update_inventory_stock(item_id: str, added_stock: float = Query(...)):
     if not item:
         raise HTTPException(status_code=404, detail="ไม่พบวัตถุดิบ")
 
-    item["stock"] += added_stock
+    item["stock"] = round(float(item["stock"]) + added_stock, 2)
     add_audit_log("Staff", "RESTOCK", f"เติมสต็อก {item['name']} เพิ่ม {added_stock} {item['unit']} (คงเหลือ: {item['stock']})")
     save_db(db)
     return {"success": True, "item": item}
@@ -531,6 +545,44 @@ def index():
     </div>
   </div>
 
+  <!-- Modal สำหรับเพิ่มเมนูอาหารใหม่ (Staff & Admin) -->
+  <div id="add-menu-modal" class="fixed inset-0 bg-black/60 z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto custom-scroll">
+      <div class="flex justify-between items-center border-b pb-3">
+        <h3 class="font-extrabold text-lg text-slate-800">🍽️ เพิ่มเมนูอาหารใหม่</h3>
+        <button onclick="document.getElementById('add-menu-modal').classList.add('hidden')" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-lg"></i></button>
+      </div>
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs font-bold text-slate-600 block mb-1">ชื่อเมนูอาหาร</label>
+          <input type="text" id="new-menu-name" placeholder="เช่น กะเพราหมูกรอบ" class="w-full border rounded-xl p-2.5 text-sm outline-none">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs font-bold text-slate-600 block mb-1">หมวดหมู่</label>
+            <input type="text" id="new-menu-cat" placeholder="เช่น อาหารจานเดียว" value="อาหารจานเดียว" class="w-full border rounded-xl p-2.5 text-sm outline-none">
+          </div>
+          <div>
+            <label class="text-xs font-bold text-slate-600 block mb-1">ราคา (บาท)</label>
+            <input type="number" id="new-menu-price" step="0.5" placeholder="0.00" class="w-full border rounded-xl p-2.5 text-sm outline-none font-bold text-blue-600">
+          </div>
+        </div>
+
+        <!-- กำหนดสูตรตัดสต็อกวัตถุดิบ -->
+        <div class="border-t pt-3">
+          <div class="flex justify-between items-center mb-2">
+            <label class="text-xs font-bold text-slate-700">📦 สูตรตัดสต็อกวัตถุดิบ (Recipe)</label>
+            <button onclick="addRecipeRow()" type="button" class="text-xs text-blue-600 font-bold hover:underline">+ เพิ่มวัตถุดิบ</button>
+          </div>
+          <div id="recipe-rows-container" class="space-y-2"></div>
+          <p class="text-[11px] text-slate-400 mt-1">* วัตถุดิบนี้จะถูกตัดสต็อกอัตโนมัติเมื่อห้องครัวเริ่มทำหรือเสิร์ฟเสร็จ</p>
+        </div>
+
+        <button onclick="submitNewMenu()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-extrabold py-3 rounded-2xl shadow-md transition mt-4">บันทึกเมนูใหม่</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ================= หน้าจอเข้าสู่ระบบ / สมัครสมาชิก (Auth Screen) ================= -->
   <div id="auth-screen" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-blue-950 p-4">
     <div class="bg-white/95 backdrop-blur-md rounded-3xl p-8 max-w-md w-full shadow-2xl border border-white/20 space-y-6">
@@ -548,7 +600,7 @@ def index():
         <button id="auth-tab-reg" onclick="switchAuthTab('register')" class="flex-1 py-2 text-slate-400 hover:text-slate-600">สมัครสมาชิก</button>
       </div>
 
-      <!-- ฟอร์มเข้าสู่ระบบ (สะอาด ไม่มีข้อความบอกใบ้) -->
+      <!-- ฟอร์มเข้าสู่ระบบ -->
       <div id="form-login" class="space-y-4">
         <div>
           <label class="text-xs font-bold text-slate-600 block mb-1">ชื่อผู้ใช้งาน</label>
@@ -571,8 +623,11 @@ def index():
         </div>
       </div>
 
-      <!-- ฟอร์มสมัครสมาชิก (สะอาด ไม่มีข้อความบอกใบ้) -->
+      <!-- ฟอร์มสมัครสมาชิก (สมัครได้เฉพาะสิทธิ์ลูกค้าทั่วไปเท่านั้น) -->
       <div id="form-register" class="space-y-4 hidden">
+        <div class="bg-blue-50/70 border border-blue-100 rounded-xl p-2.5 text-center text-xs text-blue-700 font-semibold">
+          <i class="fa-solid fa-user mr-1"></i> สมัครสมาชิกในฐานะ: ลูกค้าทั่วไป (Customer)
+        </div>
         <div>
           <label class="text-xs font-bold text-slate-600 block mb-1">ชื่อ-นามสกุล</label>
           <input type="text" id="reg-name" placeholder="ชื่อของคุณ" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none">
@@ -585,15 +640,7 @@ def index():
           <label class="text-xs font-bold text-slate-600 block mb-1">รหัสผ่าน</label>
           <input type="password" id="reg-pass" placeholder="••••••••" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none">
         </div>
-        <div>
-          <label class="text-xs font-bold text-slate-600 block mb-1">ระดับสิทธิ์</label>
-          <select id="reg-role" class="w-full border border-slate-300 rounded-xl p-2.5 text-sm outline-none bg-white">
-            <option value="customer" selected>ลูกค้าทั่วไป (Customer)</option>
-            <option value="staff">พนักงานหน้าร้าน (Staff)</option>
-            <option value="admin">ผู้ดูแลระบบ (Admin)</option>
-          </select>
-        </div>
-        <button onclick="handleRegister()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl text-sm shadow-md transition">ลงทะเบียน</button>
+        <button onclick="handleRegister()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-xl text-sm shadow-md transition">ลงทะเบียนลูกค้า</button>
       </div>
     </div>
   </div>
@@ -613,6 +660,10 @@ def index():
         </div>
 
         <nav class="space-y-1 text-sm font-medium">
+          <!-- เมนูที่ทุกสิทธิ์สามารถดูได้ -->
+          <button onclick="switchTab('menu')" id="nav-menu" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-book-open w-5 text-amber-400"></i> เมนูอาหาร</button>
+          
+          <!-- เมนูเฉพาะ Admin & Staff -->
           <button onclick="switchTab('dash')" id="nav-dash" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-chart-pie w-5 text-blue-400"></i> Dashboard สรุป</button>
           <button onclick="switchTab('tables')" id="nav-tables" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-chair w-5 text-emerald-400"></i> แผนผังโต๊ะ & POS</button>
           <button onclick="switchTab('kitchen')" id="nav-kitchen" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-fire-burner w-5 text-amber-400"></i> จอครัว (KDS)</button>
@@ -620,6 +671,8 @@ def index():
           <button onclick="switchTab('inventory')" id="nav-inventory" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-boxes-stacked w-5 text-purple-400"></i> สต็อกวัตถุดิบ</button>
           <button onclick="switchTab('queue')" id="nav-queue" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-users-line w-5 text-pink-400"></i> คิว & จองโต๊ะ</button>
           <button onclick="switchTab('logs')" id="nav-logs" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-clock-rotate-left w-5 text-rose-400"></i> Audit Logs</button>
+
+          <!-- เมนูสั่งอาหาร QR สำหรับลูกค้า -->
           <button onclick="switchTab('qr')" id="nav-qr" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-mobile-screen w-5 text-teal-400"></i> ลูกค้าสั่งเอง (QR)</button>
         </nav>
       </div>
@@ -639,6 +692,36 @@ def index():
 
     <!-- Main Content Display -->
     <main class="flex-1 overflow-y-auto p-8 custom-scroll">
+
+      <!-- ================= 0. TAB: ดูเมนูอาหารภายในร้าน (ทุกสิทธิ์เข้าถึงได้) ================= -->
+      <section id="pane-menu" class="space-y-6 hidden">
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <div>
+            <h2 class="text-2xl font-black text-slate-800">📋 เมนูอาหารและเครื่องดื่ม</h2>
+            <p class="text-xs text-slate-500">รายการเมนูทั้งหมดของทางร้าน ทุกสิทธิ์สามารถดูรายละเอียดได้</p>
+          </div>
+          <!-- ปุ่มเพิ่มเมนู (แสดงเฉพาะ Staff และ Admin) -->
+          <div id="menu-staff-controls" class="hidden">
+            <button onclick="openAddMenuModal()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-4 py-2.5 rounded-xl font-bold shadow-sm transition flex items-center gap-2">
+              <i class="fa-solid fa-plus"></i> เพิ่มเมนูใหม่
+            </button>
+          </div>
+        </div>
+
+        <!-- แถบค้นหาและกรองหมวดหมู่ -->
+        <div class="bg-white p-4 rounded-2xl border shadow-sm flex flex-col md:flex-row gap-3">
+          <div class="flex-1 relative">
+            <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-400 text-sm"></i>
+            <input type="text" id="menu-search-input" oninput="loadCatalogMenus()" placeholder="ค้นหาชื่อเมนูอาหาร..." class="w-full pl-9 pr-3 py-2 border rounded-xl text-sm outline-none">
+          </div>
+          <div class="w-full md:w-60">
+            <select id="menu-cat-filter" onchange="loadCatalogMenus()" class="w-full border rounded-xl py-2 px-3 text-sm bg-white outline-none font-semibold"></select>
+          </div>
+        </div>
+
+        <!-- รายการการ์ดเมนูอาหาร -->
+        <div id="menu-catalog-grid" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4"></div>
+      </section>
 
       <!-- ================= 1. TAB: Dashboard ================= -->
       <section id="pane-dash" class="space-y-6 hidden">
@@ -710,7 +793,7 @@ def index():
         <div class="flex justify-between items-center">
           <div>
             <h2 class="text-2xl font-black text-slate-800">👨‍🍳 Kitchen Display System (KDS)</h2>
-            <p class="text-xs text-slate-500">ออเดอร์เรียงตามลำดับเวลา กด "เริ่มทำ" เพื่อตัดสต็อกวัตถุดิบตามสูตรทันที</p>
+            <p class="text-xs text-slate-500">ออเดอร์ตัดสต็อกวัตถุดิบอัตโนมัติทั้งตอนกด "เริ่มทำ" และ "เสิร์ฟแล้ว"</p>
           </div>
           <button onclick="loadKitchenOrders()" class="bg-blue-600 text-white text-xs px-3 py-1.5 rounded-xl font-bold"><i class="fa-solid fa-rotate mr-1"></i> รีเฟรช</button>
         </div>
@@ -823,7 +906,7 @@ def index():
         <div class="flex justify-between items-center">
           <div>
             <h2 class="text-2xl font-black text-slate-800">📦 คลังวัตถุดิบ (ตัดสต็อกตามสูตร)</h2>
-            <p class="text-xs text-slate-500">วัตถุดิบจะถูกหักลบอัตโนมัติเมื่อห้องครัวกดยืนยันเริ่มปรุงอาหาร</p>
+            <p class="text-xs text-slate-500">วัตถุดิบจะถูกหักลบอัตโนมัติเมื่อห้องครัวกดยืนยันเริ่มทำหรือเสิร์ฟเสร็จ</p>
           </div>
           <button onclick="openRestockPrompt()" class="bg-blue-600 text-white text-xs px-4 py-2 rounded-xl font-bold">+ เติมสต็อกวัตถุดิบ</button>
         </div>
@@ -897,13 +980,13 @@ def index():
     </main>
   </div>
 
-  <!-- JavaScript Frontend Logic & Role Permissions -->
+  <!-- JavaScript Frontend Logic -->
   <script>
     let currentUser = null;
     let currentTable = null;
     let cachedMenu = [];
+    let cachedInventory = [];
 
-    // แสดงแจ้งเตือนแบบ Modern Floating Toast
     function showToast(msg, type = 'info') {
       const box = document.getElementById('toast-container');
       const toast = document.createElement('div');
@@ -947,7 +1030,6 @@ def index():
       showToast('เข้าใช้งานในโหมดลูกค้าเรียบร้อย', 'success');
     }
 
-    // ตรวจสอบเงื่อนไข Username (ภาษาอังกฤษและตัวเลขเท่านั้น) และ Password (6 ตัวขึ้นไป)
     function validateAuthInputs(u, p) {
       const userRegex = /^[a-zA-Z0-9]+$/;
       if (!userRegex.test(u)) {
@@ -985,7 +1067,6 @@ def index():
       const name = document.getElementById('reg-name').value.trim();
       const u = document.getElementById('reg-user').value.trim();
       const p = document.getElementById('reg-pass').value.trim();
-      const role = document.getElementById('reg-role').value;
 
       if(!name || !u || !p) return showToast('กรุณากรอกข้อมูลให้ครบถ้วน', 'error');
       if(!validateAuthInputs(u, p)) return;
@@ -993,11 +1074,11 @@ def index():
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ name: name, username: u, password: p, role: role })
+        body: JSON.stringify({ name: name, username: u, password: p })
       });
       const data = await res.json();
       if(res.ok) {
-        showToast('ลงทะเบียนสำเร็จ! กรุณาเข้าสู่ระบบ', 'success');
+        showToast('ลงทะเบียนลูกค้าสำเร็จ! กรุณาเข้าสู่ระบบ', 'success');
         switchAuthTab('login');
       } else {
         showToast(data.detail || 'เกิดข้อผิดพลาดในการลงทะเบียน', 'error');
@@ -1018,27 +1099,36 @@ def index():
     }
 
     function applyRolePermissions(role) {
-      ['dash', 'tables', 'kitchen', 'checkout', 'inventory', 'queue', 'logs', 'qr'].forEach(t => {
+      ['dash', 'tables', 'kitchen', 'checkout', 'inventory', 'queue', 'logs', 'qr', 'menu'].forEach(t => {
         const btn = document.getElementById('nav-' + t);
         if(btn) btn.classList.add('hidden');
       });
 
+      const menuControls = document.getElementById('menu-staff-controls');
+      if(menuControls) {
+        if(role === 'admin' || role === 'staff') {
+          menuControls.classList.remove('hidden');
+        } else {
+          menuControls.classList.add('hidden');
+        }
+      }
+
       if(role === 'admin') {
-        ['dash', 'tables', 'kitchen', 'checkout', 'inventory', 'queue', 'logs', 'qr'].forEach(t => {
+        ['menu', 'dash', 'tables', 'kitchen', 'checkout', 'inventory', 'queue', 'logs', 'qr'].forEach(t => {
           document.getElementById('nav-' + t).classList.remove('hidden');
         });
         switchTab('dash');
       } else if(role === 'staff') {
-        ['tables', 'kitchen', 'checkout', 'inventory', 'queue'].forEach(t => {
+        ['menu', 'tables', 'kitchen', 'checkout', 'inventory', 'queue'].forEach(t => {
           document.getElementById('nav-' + t).classList.remove('hidden');
         });
-        switchTab('tables');
+        switchTab('menu');
       } else {
-        // Customer
-        ['qr', 'queue'].forEach(t => {
+        // Customer: ดูเมนู, สั่งอาหาร QR, คิว
+        ['menu', 'qr', 'queue'].forEach(t => {
           document.getElementById('nav-' + t).classList.remove('hidden');
         });
-        switchTab('qr');
+        switchTab('menu');
       }
     }
 
@@ -1064,6 +1154,7 @@ def index():
         targetNav.classList.add('bg-blue-600', 'text-white');
       }
 
+      if(name === 'menu') loadCatalogMenus();
       if(name === 'dash') loadDashboard();
       if(name === 'tables') loadTables();
       if(name === 'kitchen') loadKitchenOrders();
@@ -1072,6 +1163,142 @@ def index():
       if(name === 'logs') loadLogs();
       if(name === 'checkout') loadCheckoutTables();
       if(name === 'qr') loadQrMenu();
+    }
+
+    // ================= ฟังก์ชันดูเมนูอาหาร & เพิ่มเมนู =================
+    async function loadCatalogMenus() {
+      const search = document.getElementById('menu-search-input').value.trim();
+      const cat = document.getElementById('menu-cat-filter').value;
+      
+      const res = await fetch(`/api/menu?search=${encodeURIComponent(search)}&category=${encodeURIComponent(cat)}&limit=100`);
+      const data = await res.json();
+      cachedMenu = data.items;
+
+      const catFilter = document.getElementById('menu-cat-filter');
+      const curCat = catFilter.value;
+      catFilter.innerHTML = '<option value="">ทุกหมวดหมู่</option>' + data.categories.map(c => `<option value="${c}" ${c === curCat ? 'selected' : ''}>${c}</option>`).join('');
+
+      const invRes = await fetch('/api/inventory');
+      cachedInventory = await invRes.json();
+
+      const grid = document.getElementById('menu-catalog-grid');
+      const isStaffOrAdmin = currentUser && (currentUser.role === 'admin' || currentUser.role === 'staff');
+
+      grid.innerHTML = data.items.map(m => {
+        let recipeTxt = (m.recipe && m.recipe.length > 0) ? m.recipe.map(r => {
+          const invItem = cachedInventory.find(i => i.id === r.ingredient_id);
+          return `${invItem ? invItem.name : r.ingredient_id} (${r.amount})`;
+        }).join(', ') : 'ไม่มีสูตรตัดสต็อก';
+
+        return `
+          <div class="bg-white p-4 rounded-2xl border shadow-sm flex flex-col justify-between hover:shadow-md transition">
+            <div>
+              <div class="flex justify-between items-start mb-2">
+                <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">${m.category}</span>
+                <span class="text-[10px] font-extrabold px-2 py-0.5 rounded-full ${m.is_available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}">
+                  ${m.is_available ? 'พร้อมขาย' : 'หมด'}
+                </span>
+              </div>
+              <h4 class="font-black text-base text-slate-800">${m.name}</h4>
+              <p class="text-xs text-slate-400 mt-1 line-clamp-1" title="${recipeTxt}"><i class="fa-solid fa-boxes-stacked mr-1"></i>${recipeTxt}</p>
+            </div>
+            <div class="mt-4 pt-3 border-t">
+              <div class="text-blue-600 font-black text-lg mb-3">${m.price.toFixed(2)} ฿</div>
+              <div class="flex gap-2">
+                ${isStaffOrAdmin ? `
+                  <button onclick="toggleMenu(${m.id})" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs py-1.5 rounded-xl font-bold transition">สลับสถานะ</button>
+                  <button onclick="deleteMenu(${m.id})" class="text-slate-400 hover:text-rose-600 px-2 py-1.5 rounded-xl text-xs" title="ลบเมนู"><i class="fa-solid fa-trash-can"></i></button>
+                ` : `
+                  <button onclick="quickOrderMenu(${m.id})" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 rounded-xl font-bold transition">สั่งเมนูนี้ (QR)</button>
+                `}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('') || '<p class="text-slate-400 text-xs col-span-4 text-center py-8">ไม่พบรายการเมนู</p>';
+    }
+
+    async function toggleMenu(mid) {
+      await fetch(`/api/menu/${mid}/toggle`, { method: 'POST' });
+      showToast('ปรับสถานะเมนูเรียบร้อย', 'success');
+      loadCatalogMenus();
+    }
+
+    async function deleteMenu(mid) {
+      if(!confirm('คุณแน่ใจหรือไม่ว่าต้องการลบเมนูนี้?')) return;
+      const res = await fetch(`/api/menu/${mid}`, { method: 'DELETE' });
+      if(res.ok) {
+        showToast('ลบเมนูสำเร็จ', 'success');
+        loadCatalogMenus();
+      }
+    }
+
+    function quickOrderMenu(mid) {
+      switchTab('qr');
+      document.getElementById('qr-select-menu').value = mid;
+    }
+
+    async function openAddMenuModal() {
+      const invRes = await fetch('/api/inventory');
+      cachedInventory = await invRes.json();
+      document.getElementById('recipe-rows-container').innerHTML = '';
+      addRecipeRow();
+      document.getElementById('add-menu-modal').classList.remove('hidden');
+    }
+
+    function addRecipeRow() {
+      const c = document.getElementById('recipe-rows-container');
+      const row = document.createElement('div');
+      row.className = 'flex gap-2 items-center';
+      row.innerHTML = `
+        <select class="recipe-ing-sel flex-1 border rounded-xl p-2 text-xs bg-white outline-none">
+          ${cachedInventory.map(i => `<option value="${i.id}">${i.name} (คงเหลือ: ${i.stock} ${i.unit})</option>`).join('')}
+        </select>
+        <input type="number" step="0.1" placeholder="ปริมาณที่ใช้" class="recipe-amt-input w-28 border rounded-xl p-2 text-xs outline-none font-bold">
+        <button onclick="this.parentElement.remove()" type="button" class="text-slate-400 hover:text-rose-600 p-1"><i class="fa-solid fa-xmark"></i></button>
+      `;
+      c.appendChild(row);
+    }
+
+    async function submitNewMenu() {
+      const name = document.getElementById('new-menu-name').value.trim();
+      const cat = document.getElementById('new-menu-cat').value.trim();
+      const price = parseFloat(document.getElementById('new-menu-price').value);
+
+      if(!name || isNaN(price) || price < 0) {
+        return showToast('กรุณากรอกชื่อและราคาให้ถูกต้อง', 'error');
+      }
+
+      const recipe = [];
+      document.querySelectorAll('#recipe-rows-container > div').forEach(row => {
+        const ingId = row.querySelector('.recipe-ing-sel').value;
+        const amt = parseFloat(row.querySelector('.recipe-amt-input').value);
+        if(ingId && !isNaN(amt) && amt > 0) {
+          recipe.push({ ingredient_id: ingId, amount: amt });
+        }
+      });
+
+      const res = await fetch('/api/menu', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          name: name,
+          category: cat || 'อาหารจานเดียว',
+          price: price,
+          is_available: true,
+          recipe: recipe
+        })
+      });
+
+      if(res.ok) {
+        showToast('เพิ่มเมนูอาหารเรียบร้อยแล้ว!', 'success');
+        document.getElementById('add-menu-modal').classList.add('hidden');
+        document.getElementById('new-menu-name').value = '';
+        document.getElementById('new-menu-price').value = '';
+        loadCatalogMenus();
+      } else {
+        showToast('ไม่สามารถเพิ่มเมนูได้', 'error');
+      }
     }
 
     async function loadDashboard() {
@@ -1214,6 +1441,7 @@ def index():
       loadTableOrders(currentTable);
     }
 
+    // ================= KDS: จอครัวพร้อมตัดสต็อก =================
     async function loadKitchenOrders() {
       const res = await fetch('/api/orders');
       const orders = await res.json();
@@ -1228,8 +1456,8 @@ def index():
           <h4 class="font-black text-base text-slate-800">${o.name} x ${o.qty}</h4>
           ${o.options ? `<p class="text-xs text-slate-500">ตัวเลือก: ${o.options.spiciness || ''} | ${o.options.egg || ''} | ${o.options.size || ''}</p>` : ''}
           <div class="flex gap-2 pt-2">
-            ${o.status === 'รอทำ' ? `<button onclick="kitchenAction(${o.order_id}, 'กำลังทำ')" class="bg-blue-600 text-white text-xs px-3 py-2 rounded-xl font-bold flex-1">เริ่มทำ (ตัดสต็อก)</button>` : ''}
-            <button onclick="kitchenAction(${o.order_id}, 'เสิร์ฟแล้ว')" class="bg-emerald-600 text-white text-xs px-3 py-2 rounded-xl font-bold flex-1">เสิร์ฟแล้ว</button>
+            ${o.status === 'รอทำ' ? `<button onclick="kitchenAction(${o.order_id}, 'กำลังทำ')" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-2 rounded-xl font-bold flex-1">เริ่มทำ (ตัดสต็อก)</button>` : ''}
+            <button onclick="kitchenAction(${o.order_id}, 'เสิร์ฟแล้ว')" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-2 rounded-xl font-bold flex-1">เสิร์ฟแล้ว (ตัดสต็อก)</button>
           </div>
         </div>
       `).join('') || '<p class="text-slate-400 text-xs">ไม่มีออเดอร์ค้างทำในห้องครัว 🎉</p>';
@@ -1241,14 +1469,17 @@ def index():
         const err = await res.json();
         showToast(err.detail || 'ไม่สามารถตัดสต็อกได้', 'error');
       } else {
-        showToast(`อัปเดตสถานะเป็น "${st}" สำเร็จ`, 'success');
+        showToast(`อัปเดตสถานะเป็น "${st}" และตัดสต็อกสำเร็จ`, 'success');
       }
       loadKitchenOrders();
+      loadInventory();
+      loadDashboard();
     }
 
     async function loadInventory() {
       const res = await fetch('/api/inventory');
       const inv = await res.json();
+      cachedInventory = inv;
       document.getElementById('inventory-table-body').innerHTML = inv.map(i => {
         let isLow = i.stock <= i.min_stock;
         return `
@@ -1274,12 +1505,9 @@ def index():
       }
     }
 
-    // ================= ระบบคิว (ลูกค้าไม่สามารถกดเรียกคิวได้) =================
     async function loadQueues() {
       const res = await fetch('/api/queues');
       const qs = await res.json();
-      
-      // ตรวจสอบว่าผู้ใช้มีสิทธิ์เรียกคิวหรือไม่ (เฉพาะ Admin และ Staff เท่านั้น)
       const canCallQueue = currentUser && (currentUser.role === 'admin' || currentUser.role === 'staff');
 
       document.getElementById('queue-list').innerHTML = qs.filter(q => q.status === 'รอเรียก').map(q => `
@@ -1463,11 +1691,13 @@ def index():
     evt.onmessage = function(e) {
       const ev = JSON.parse(e.data);
       if(ev.type === 'NEW_ORDER') {
-        // แจ้งเตือนเฉพาะ Staff และ Admin เท่านั้น (ฝั่งลูกค้าจะไม่เห็นการแจ้งเตือนนี้)
         if (currentUser && currentUser.role !== 'customer') {
           showToast(`🔔 โต๊ะ ${ev.data.table_id} มีออเดอร์ใหม่เข้ามา!`, 'info');
           loadKitchenOrders();
         }
+      } else if(ev.type === 'STOCK_UPDATE') {
+        loadInventory();
+        loadDashboard();
       } else if(ev.type === 'QUEUE_UPDATE') {
         loadQueues();
       }
@@ -1477,7 +1707,6 @@ def index():
       document.getElementById('live-clock').innerText = new Date().toLocaleTimeString('th-TH');
     }, 1000);
 
-    // ตรวจสอบสถานะเดิม
     const savedUser = localStorage.getItem('restro_user');
     if(savedUser) {
       setupSession(JSON.parse(savedUser));

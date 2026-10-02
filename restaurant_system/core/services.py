@@ -1,19 +1,16 @@
 """
 core/services.py - รวมตรรกะทางธุรกิจทั้งหมดของระบบ (Business Logic Layer)
-รองรับทั้งฟีเจอร์พื้นฐานเดิม และฟีเจอร์ขั้นสูงสำหรับ Vercel
+ปรับปรุง: ระบบตัดสต็อกแบบ In-Memory ปลอดภัย 100% ไม่เกิดปัญหาบันทึกทับ
 """
 
 from datetime import datetime
 from typing import Dict, Any, List, Tuple
 from core.database import load_db, save_db, add_audit_log
 
-# ค่าคงที่ใช้อ้างอิง (Tuple)
 RATES: tuple = (0.07, 0.10)  # (VAT 7%, Service Charge 10%)
 TABLE_STATUSES: tuple = ("ว่าง", "มีลูกค้า", "รอเช็คบิล")
 KITCHEN_STATUSES: tuple = ("รอทำ", "กำลังทำ", "เสิร์ฟแล้ว", "ยกเลิก")
 
-
-# ================= 1. ฟังก์ชันเดิมจากรอบแรก (ปรับปรุงเข้ากับ DB ใหม่) =================
 
 def get_unique_categories(menu_list: list) -> list:
     """ดึงหมวดหมู่ที่ไม่ซ้ำกันโดยใช้ Set"""
@@ -25,14 +22,10 @@ def get_unique_categories(menu_list: list) -> list:
 
 
 def calculate_bill(items: list, discount_percent: float = 0.0) -> tuple:
-    """
-    คำนวณยอดเงินรวม ส่วนลด เซอร์วิสชาร์จ 10% และ VAT 7%
-    คืนค่าเป็น Tuple: (subtotal, discount_amount, service_charge, vat, net_total)
-    """
+    """คำนวณยอดเงินรวม ส่วนลด เซอร์วิสชาร์จ 10% และ VAT 7%"""
     subtotal: float = 0.0
     for order_item in items:
         if not (order_item.get("status") == "ยกเลิก"):
-            # รองรับทั้งคีย์ unit_price และ price
             price: float = float(order_item.get("unit_price", order_item.get("price", 0.0)))
             qty: int = int(order_item.get("qty", 1))
             subtotal += price * qty
@@ -88,36 +81,33 @@ def generate_sales_report(target_date: str = "") -> dict:
     }
 
 
-# ================= 2. ฟังก์ชันส่วนเสริมใหม่ (ฟีเจอร์ขั้นสูง) =================
-
-def deduct_stock_by_recipe(menu_id: int, qty: int, actor: str) -> Tuple[bool, str]:
-    """ตัดสต็อกวัตถุดิบอัตโนมัติตามสูตรอาหารเมื่อห้องครัวรับออเดอร์"""
-    db = load_db()
+def deduct_stock_in_db(db: dict, menu_id: int, qty: int, actor: str) -> Tuple[bool, str]:
+    """ตัดสต็อกวัตถุดิบในออบเจ็กต์ฐานข้อมูลโดยตรง ป้องกันบั๊กเขียนไฟล์ทับซ้อน"""
     menu_item = next((m for m in db.get("menu", []) if m["id"] == menu_id), None)
     if not menu_item or not menu_item.get("recipe"):
         return True, "ไม่มีสูตรอาหาร ไม่ต้องตัดสต็อก"
 
-    # 1. ตรวจสอบว่าวัตถุดิบพอหรือไม่ก่อน
+    # 1. ตรวจสอบว่ามีวัตถุดิบเพียงพอหรือไม่
     for ing in menu_item["recipe"]:
         item = next((i for i in db.get("inventory", []) if i["id"] == ing["ingredient_id"]), None)
-        if not item or item["stock"] < (ing["amount"] * qty):
+        needed = float(ing["amount"]) * qty
+        if not item or item["stock"] < needed:
             item_name = item["name"] if item else "ไม่ทราบชื่อ"
-            return False, f"วัตถุดิบ '{item_name}' ไม่เพียงพอ (คงเหลือ: {item['stock'] if item else 0})"
+            return False, f"วัตถุดิบ '{item_name}' ไม่เพียงพอ (คงเหลือ: {item['stock'] if item else 0}, ต้องการ: {needed})"
 
-    # 2. ตัดสต็อกจริงและลง Audit Log
+    # 2. ทำการตัดสต็อกจริง
     for ing in menu_item["recipe"]:
-        for item in db["inventory"]:
+        for item in db.get("inventory", []):
             if item["id"] == ing["ingredient_id"]:
-                deducted = ing["amount"] * qty
-                item["stock"] -= deducted
-                add_audit_log(actor, "DEDUCT_STOCK", f"ตัดวัตถุดิบ {item['name']} จำนวน {deducted} {item['unit']}")
+                deducted = round(float(ing["amount"]) * qty, 2)
+                item["stock"] = round(float(item["stock"]) - deducted, 2)
+                add_audit_log(actor, "DEDUCT_STOCK", f"ตัดวัตถุดิบ {item['name']} จำนวน {deducted} {item['unit']} สำหรับเมนู '{menu_item['name']}' x{qty}")
 
-    save_db(db)
     return True, "ตัดสต็อกวัตถุดิบตามสูตรสำเร็จ"
 
 
 def move_table(from_table: int, to_table: int, actor: str) -> Tuple[bool, str]:
-    """ย้ายโต๊ะ: โอนรายการอาหารทั้งหมดไปยังโต๊ะใหม่"""
+    """ย้ายโต๊ะ"""
     db = load_db()
     t_target = next((t for t in db["tables"] if t["table_id"] == to_table), None)
     if not t_target:
@@ -143,7 +133,7 @@ def move_table(from_table: int, to_table: int, actor: str) -> Tuple[bool, str]:
 
 
 def merge_tables(source_tables: List[int], target_table: int, actor: str) -> Tuple[bool, str]:
-    """รวมโต๊ะ: รวมออเดอร์ของหลายโต๊ะมารวมไว้ที่โต๊ะเป้าหมาย"""
+    """รวมโต๊ะ"""
     db = load_db()
     for o in db.get("orders", []):
         if o["table_id"] in source_tables and o["status"] != "ยกเลิก":
@@ -161,7 +151,7 @@ def merge_tables(source_tables: List[int], target_table: int, actor: str) -> Tup
 
 
 def process_loyalty_points(phone: str, net_amount: float) -> int:
-    """สะสมแต้มสมาชิก: ยอดใช้จ่ายทุก 10 บาท ได้รับ 1 แต้ม"""
+    """สะสมแต้มสมาชิก"""
     if not phone:
         return 0
     db = load_db()
@@ -173,7 +163,6 @@ def process_loyalty_points(phone: str, net_amount: float) -> int:
             save_db(db)
             return m["points"]
 
-    # ถ้ายังไม่เคยเป็นสมาชิก สมัครให้อัตโนมัติทันที
     db.setdefault("members", []).append({
         "phone": phone,
         "name": "ลูกค้าทั่วไป",
@@ -185,7 +174,7 @@ def process_loyalty_points(phone: str, net_amount: float) -> int:
 
 def paginate_and_sort(items: list, search: str = "", search_field: str = "name",
                       sort_by: str = "", order: str = "asc", page: int = 1, limit: int = 10) -> dict:
-    """ฟังก์ชันกลางสำหรับ ค้นหา กรอง เรียงลำดับ และแบ่งหน้า (Pagination)"""
+    """จัดหน้า ค้นหา และเรียงลำดับ"""
     filtered = items
     if search:
         filtered = [x for x in items if search.lower() in str(x.get(search_field, "")).lower()]
