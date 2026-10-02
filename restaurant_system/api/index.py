@@ -1,6 +1,7 @@
+
 """
 api/index.py - REST API, RBAC Authentication, Real-Time SSE and Full-Feature Modern UI
-ฟีเจอร์ครบ 100%: เพิ่มวัตถุดิบใหม่, สลับ Dark/Light Mode, ติดตามกิจกรรมลูกค้าเรียลไทม์, ตัดสต็อกตามสูตร, ปลอดภัยไร้บั๊ก
+อัปเดต: เชื่อมโยงยอดขายเข้าแดชบอร์ดทันที, กิจกรรมลูกค้าเรียลไทม์, เอาปุ่มทดสอบด่วนออก, ปลอดภัยไร้บั๊ก
 """
 
 import json
@@ -20,8 +21,7 @@ import core.services as services
 
 app = FastAPI(title="Smart Restaurant Pro Enterprise", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
-# ================= 0. Error Handlers ป้องกัน Traceback 500 =================
-
+# Error Handlers
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = exc.errors()
@@ -63,8 +63,7 @@ def require_role(token_str: Optional[str], allowed_roles: List[str]) -> Dict[str
         raise HTTPException(status_code=403, detail="คุณไม่มีสิทธิ์ทำรายการนี้")
     return user_info
 
-# ================= 1. Schemas สำหรับตรวจสอบข้อมูล (Validation) =================
-
+# Schemas
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -136,7 +135,7 @@ class InventoryItemRequest(BaseModel):
     unit: str
     min_stock: float = Field(default=10, ge=0)
 
-# ================= 2. Authentication & Admin Customer Tracker APIs =================
+# ================= 2. Authentication & Customer Tracker APIs =================
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
@@ -151,13 +150,17 @@ async def login(req: LoginRequest):
         raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
 
     token = create_access_token(user["id"], user["role"])
-    add_audit_log(user["username"], "LOGIN", f"เข้าสู่ระบบในฐานะ {user['role']}")
-    await broadcast_event("CUSTOMER_ACTIVITY", {"user": user["username"], "action": "LOGIN", "desc": "เข้าสู่ระบบ"})
+    add_audit_log(user["name"], "LOGIN", f"เข้าสู่ระบบในฐานะ {user['role']}")
+    
+    if user["role"] == "customer":
+        await broadcast_event("CUSTOMER_ACTIVITY", {"user": user["name"], "action": "LOGIN", "desc": "เข้าสู่ระบบในฐานะลูกค้า"})
+
     return {"token": token, "role": user["role"], "name": user["name"], "username": user["username"]}
 
 @app.post("/api/auth/register")
 async def register(req: RegisterRequest):
-    if not req.name.strip():
+    name_clean = req.name.strip()
+    if not name_clean:
         raise HTTPException(status_code=400, detail="ชื่อ-นามสกุลต้องไม่เป็นช่องว่าง")
     if not re.match(r"^[a-zA-Z0-9]+$", req.username):
         raise HTTPException(status_code=400, detail="ชื่อผู้ใช้ต้องเป็นภาษาอังกฤษและตัวเลขเท่านั้น")
@@ -175,24 +178,24 @@ async def register(req: RegisterRequest):
         "password_hash": h,
         "salt": s,
         "role": "customer",
-        "name": req.name.strip(),
+        "name": name_clean,
         "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     db.setdefault("users", []).append(new_user)
     save_db(db)
-    add_audit_log(req.username, "REGISTER", f"ลูกค้าใหม่ลงทะเบียน: {req.name}")
-    await broadcast_event("CUSTOMER_ACTIVITY", {"user": req.username, "action": "REGISTER", "desc": f"ลงทะเบียนชื่อ {req.name}"})
+    
+    add_audit_log(name_clean, "CUSTOMER_REGISTER", f"ลูกค้าใหม่สมัครสมาชิก: @{req.username}")
+    await broadcast_event("CUSTOMER_ACTIVITY", {"user": name_clean, "action": "CUSTOMER_REGISTER", "desc": f"สมัครสมาชิกใหม่ (@{req.username})"})
     return {"success": True, "message": "ลงทะเบียนสมาชิกลูกค้าสำเร็จ"}
 
 @app.get("/api/admin/customers")
 def get_admin_customers(x_auth_token: Optional[str] = Header(None)):
-    """ฟังก์ชันให้ Admin ดูว่าลูกค้าสมัครกี่คน ชื่ออะไร และประวัติการกดกิจกรรมในเว็บ"""
+    """API สำหรับ Admin: ดูรายชื่อลูกค้า และประวัติกิจกรรมที่ลูกค้าทำในเว็บ"""
     require_role(x_auth_token, ["admin"])
     db = load_db()
     customers = [u for u in db.get("users", []) if u.get("role") == "customer"]
     
-    # รวมแต้มสะสม
-    member_map = {m["phone"]: m.get("points", 0) for m in db.get("members", [])}
+    member_map = {m.get("phone", ""): m.get("points", 0) for m in db.get("members", [])}
     
     customer_list = []
     for c in customers:
@@ -201,17 +204,20 @@ def get_admin_customers(x_auth_token: Optional[str] = Header(None)):
             "username": c["username"],
             "name": c["name"],
             "registered_at": c.get("registered_at", "ก่อนหน้านี้"),
-            "points": member_map.get(c["username"], 0)
+            "points": member_map.get(c.get("username"), 0)
         })
 
-    # ดึงเฉพาะ Logs ที่เกี่ยวข้องกับลูกค้า
     logs = db.get("audit_logs", [])
-    customer_activities = [l for l in logs if l.get("action") in ("REGISTER", "LOGIN", "CUSTOMER_ORDER", "CUSTOMER_QUEUE", "CUSTOMER_RESERVE")]
+    # ดึงกิจกรรมของลูกค้าทั้งหมด
+    customer_activities = [
+        l for l in logs 
+        if l.get("action", "").startswith("CUSTOMER_") or l.get("action") in ("REGISTER", "CUSTOMER_REGISTER", "CUSTOMER_ORDER", "CUSTOMER_QUEUE", "CUSTOMER_RESERVE", "CUSTOMER_CHECKOUT")
+    ]
 
     return {
         "total_customers": len(customer_list),
         "customers": customer_list,
-        "recent_activities": customer_activities[:20]
+        "recent_activities": customer_activities[:30]
     }
 
 # ================= 3. Real-Time SSE =================
@@ -312,7 +318,7 @@ def create_table(req: TableCreateRequest, x_auth_token: Optional[str] = Header(N
     new_id = req.table_id if req.table_id else (max([t["table_id"] for t in tables], default=0) + 1)
     
     if any(t["table_id"] == new_id for t in tables):
-        raise HTTPException(status_code=400, detail=f"โต๊ะหมายเลข {new_id} มีอยู่ในระบบแล้ว")
+        raise HTTPException(status_code=400, detail=f"โต๊ะหมายเลข {new_id} มีอยู่แล้ว")
 
     new_table = {"table_id": new_id, "status": "ว่าง", "capacity": req.capacity}
     tables.append(new_table)
@@ -327,9 +333,9 @@ def delete_table(table_id: int, x_auth_token: Optional[str] = Header(None)):
     tables = db.get("tables", [])
     table = next((t for t in tables if t["table_id"] == table_id), None)
     if not table:
-        raise HTTPException(status_code=404, detail="ไม่พบโต๊ะที่ต้องการลบ")
+        raise HTTPException(status_code=404, detail="ไม่พบโต๊ะ")
     if table.get("status") != "ว่าง":
-        raise HTTPException(status_code=400, detail="ไม่สามารถลบโต๊ะที่มีลูกค้าหรือรอเช็คบิลได้")
+        raise HTTPException(status_code=400, detail="ไม่สามารถลบโต๊ะที่มีลูกค้าอยู่ได้")
 
     db["tables"] = [t for t in tables if t["table_id"] != table_id]
     add_audit_log("Admin", "DELETE_TABLE", f"ลบโต๊ะหมายเลข {table_id}")
@@ -352,7 +358,7 @@ def merge_table_route(req: MergeTableRequest, x_auth_token: Optional[str] = Head
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
 
-# ================= 6. สั่งอาหาร & จอครัว (ตัดสต็อกสมบูรณ์) =================
+# ================= 6. สั่งอาหาร & จอครัว =================
 
 @app.get("/api/orders")
 def get_orders(table_id: Optional[int] = None):
@@ -371,10 +377,14 @@ async def customer_order(req: CustomerOrderRequest, x_auth_token: Optional[str] 
     if not req.items:
         raise HTTPException(status_code=400, detail="กรุณาเลือกรายการอาหาร")
 
-    actor = "ลูกค้าทั่วไป"
+    # ค้นหาชื่อผู้สั่ง
+    actor_name = f"ลูกค้า (โต๊ะ {req.table_id})"
     if x_auth_token:
         u = parse_token(x_auth_token)
-        if u: actor = u["user_id"]
+        if u:
+            matching_user = next((x for x in db.get("users", []) if x["id"] == u["user_id"]), None)
+            if matching_user:
+                actor_name = matching_user["name"]
 
     for it in req.items:
         menu_item = next((m for m in db.get("menu", []) if m["id"] == it.menu_id), None)
@@ -413,9 +423,9 @@ async def customer_order(req: CustomerOrderRequest, x_auth_token: Optional[str] 
     table["status"] = "มีลูกค้า"
     save_db(db)
     
-    add_audit_log(actor, "CUSTOMER_ORDER", f"สั่งอาหารโต๊ะ {req.table_id}: {', '.join(order_names)}")
+    add_audit_log(actor_name, "CUSTOMER_ORDER", f"สั่งอาหารโต๊ะ {req.table_id}: {', '.join(order_names)}")
     await broadcast_event("NEW_ORDER", {"table_id": req.table_id, "count": len(created)})
-    await broadcast_event("CUSTOMER_ACTIVITY", {"user": actor, "action": "CUSTOMER_ORDER", "desc": f"สั่งอาหารโต๊ะ {req.table_id}"})
+    await broadcast_event("CUSTOMER_ACTIVITY", {"user": actor_name, "action": "CUSTOMER_ORDER", "desc": f"สั่งอาหารโต๊ะ {req.table_id} ({len(created)} รายการ)"})
     return {"success": True, "message": "ส่งรายการเข้าครัวแล้ว", "orders": created}
 
 @app.post("/api/kitchen/{order_id}/status")
@@ -441,7 +451,7 @@ async def update_kitchen_order(order_id: int, status: str = Query(...), x_auth_t
     await broadcast_event("STOCK_UPDATE", {})
     return {"success": True, "status": status}
 
-# ================= 7. สต็อกวัตถุดิบ (เพิ่มวัตถุดิบใหม่ & ปรับยอด) =================
+# ================= 7. สต็อกวัตถุดิบ =================
 
 @app.get("/api/inventory")
 def get_inventory():
@@ -450,7 +460,6 @@ def get_inventory():
 
 @app.post("/api/inventory")
 def add_new_inventory_item(req: InventoryItemRequest, x_auth_token: Optional[str] = Header(None)):
-    """เพิ่มวัตถุดิบใหม่เข้าคลังสต็อก (เช่น พริก, ปลาร้า, หมูกรอบ)"""
     user = require_role(x_auth_token, ["admin", "staff"])
     name = req.name.strip()
     if not name:
@@ -516,7 +525,7 @@ async def issue_queue(req: QueueRequest):
     save_db(db)
     add_audit_log(name, "CUSTOMER_QUEUE", f"รับบัตรคิว {q_num} ({req.party_size} ท่าน)")
     await broadcast_event("QUEUE_UPDATE", ticket)
-    await broadcast_event("CUSTOMER_ACTIVITY", {"user": name, "action": "CUSTOMER_QUEUE", "desc": f"รับบัตรคิว {q_num}"})
+    await broadcast_event("CUSTOMER_ACTIVITY", {"user": name, "action": "CUSTOMER_QUEUE", "desc": f"รับบัตรคิว {q_num} ({req.party_size} ท่าน)"})
     return ticket
 
 @app.post("/api/queue/{queue_id}/status")
@@ -553,15 +562,15 @@ async def create_reservation(req: ReservationRequest):
     await broadcast_event("CUSTOMER_ACTIVITY", {"user": name, "action": "CUSTOMER_RESERVE", "desc": f"จองโต๊ะ {req.date} ({req.party_size} ท่าน)"})
     return {"success": True, "reservation": res_entry}
 
-# ================= 9. เช็คบิล / ใบเสร็จ =================
+# ================= 9. เช็คบิล / ใบเสร็จ & อัปเดตยอดขายสดเข้า Dashboard =================
 
 @app.post("/api/checkout")
-def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Header(None)):
+async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Header(None)):
     user = require_role(x_auth_token, ["admin", "staff"])
     db = load_db()
     orders = [o for o in db.get("orders", []) if o["table_id"] == req.table_id and o.get("status") != "ยกเลิก"]
     if not orders:
-        raise HTTPException(status_code=400, detail="ไม่มีรายการอาหารค้างชำระ")
+        raise HTTPException(status_code=400, detail="ไม่มีรายการอาหารค้างชำระสำหรับโต๊ะนี้")
 
     subtotal, disc_amt, sc, vat, net = services.calculate_bill(orders, req.discount_percent)
 
@@ -598,25 +607,44 @@ def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Header(No
         if t["table_id"] == req.table_id:
             t["status"] = "ว่าง"
 
-    add_audit_log(user.get("role", "Cashier"), "CHECKOUT", f"เช็คบิลโต๊ะ {req.table_id} ยอด {net} ฿")
+    add_audit_log(user.get("role", "Cashier"), "CUSTOMER_CHECKOUT", f"เช็คบิลโต๊ะ {req.table_id} ยอดสุทธิ {net} ฿")
     save_db(db)
+
+    # ส่งสัญญาณ Real-time กระตุ้นให้ Dashboard อัปเดตทันที
+    await broadcast_event("DASHBOARD_UPDATE", {"revenue": net})
+    await broadcast_event("CUSTOMER_ACTIVITY", {"user": f"โต๊ะ {req.table_id}", "action": "CUSTOMER_CHECKOUT", "desc": f"ชำระเงินเรียบร้อย ยอด {net} ฿"})
+    
     return {"success": True, "receipt": receipt, "earned_points": earned_pts}
+
+# ================= 10. Dashboard & Audit Logs =================
 
 @app.get("/api/dashboard")
 def get_dashboard(x_auth_token: Optional[str] = Header(None)):
     require_role(x_auth_token, ["admin", "staff"])
     db = load_db()
-    total_sales = sum(s.get("net_total", 0.0) for s in db.get("sales", []))
+    
+    sales = db.get("sales", [])
+    total_sales = sum(float(s.get("net_total", 0.0)) for s in sales)
     occupied_tables = sum(1 for t in db.get("tables", []) if t.get("status") != "ว่าง")
     low_stock = [i for i in db.get("inventory", []) if i.get("stock", 0) <= i.get("min_stock", 10)]
-    report = services.generate_sales_report()
+
+    # คำนวณ 5 อันดับเมนูขายดีจากประวัติการขายจริงทั้งหมด
+    item_sales_counter = {}
+    for s in sales:
+        for it in s.get("items", []):
+            name = it.get("name", "ไม่ระบุ")
+            qty = int(it.get("qty", 1))
+            item_sales_counter[name] = item_sales_counter.get(name, 0) + qty
+
+    best_sellers = sorted(item_sales_counter.items(), key=lambda x: x[1], reverse=True)[:5]
+
     return {
         "total_revenue": round(total_sales, 2),
-        "total_bills": len(db.get("sales", [])),
+        "total_bills": len(sales),
         "occupied_tables": occupied_tables,
         "total_tables": len(db.get("tables", [])),
         "low_stock_alerts": low_stock,
-        "best_sellers": report.get("best_sellers", []),
+        "best_sellers": [{"name": k, "qty": v} for k, v in best_sellers],
         "recent_logs": db.get("audit_logs", [])[:15]
     }
 
@@ -627,7 +655,7 @@ def get_audit_logs(page: int = 1, limit: int = 15, x_auth_token: Optional[str] =
     logs = db.get("audit_logs", [])
     return services.paginate_and_sort(logs, sort_by="", page=page, limit=limit)
 
-# ================= 10. Single-Page Application (HTML/JS + Dark Mode) =================
+# ================= 11. Single-Page Application (HTML/JS) =================
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -639,9 +667,7 @@ def index():
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
-    tailwind.config = {
-      darkMode: 'class',
-    }
+    tailwind.config = { darkMode: 'class' }
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -760,7 +786,7 @@ def index():
     </div>
   </div>
 
-  <!-- Auth Screen -->
+  <!-- Auth Screen (เอาปุ่มทดสอบด่วนออก ให้กรอกรหัสจริง) -->
   <div id="auth-screen" class="min-h-screen flex items-center justify-center bg-slate-900 p-4 relative overflow-hidden">
     <div class="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl relative z-10 space-y-6">
       <div class="text-center space-y-2">
@@ -768,10 +794,13 @@ def index():
         <h2 class="text-2xl font-extrabold text-slate-900">RESTRO PRO</h2>
         <p class="text-xs text-slate-500">ระบบจัดการร้านอาหาร คลังสต็อก และ POS หน้าร้าน</p>
       </div>
+
       <div class="flex p-1 bg-slate-100 rounded-2xl text-xs font-semibold">
         <button id="auth-tab-login" onclick="switchAuthTab('login')" class="flex-1 py-2 rounded-xl bg-white text-slate-900 shadow-sm transition">เข้าสู่ระบบ</button>
         <button id="auth-tab-reg" onclick="switchAuthTab('register')" class="flex-1 py-2 rounded-xl text-slate-500 transition">สมัครสมาชิก</button>
       </div>
+
+      <!-- ฟอร์มเข้าสู่ระบบ (สะอาด ไม่มีปุ่มลัด) -->
       <div id="form-login" class="space-y-4">
         <div>
           <label class="text-xs font-semibold text-slate-700 block mb-1">ชื่อผู้ใช้งาน</label>
@@ -782,15 +811,9 @@ def index():
           <input type="password" id="login-pass" placeholder="••••••••" class="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-indigo-500">
         </div>
         <button onclick="handleLogin()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl text-sm shadow-md transition">เข้าสู่ระบบ</button>
-        <div class="pt-4 border-t border-slate-100 space-y-2">
-          <p class="text-[11px] text-slate-400 text-center font-medium">⚡ เข้าสู่ระบบด่วนเพื่อทดสอบ:</p>
-          <div class="grid grid-cols-3 gap-2">
-            <button onclick="quickLogin('admin', 'admin123')" class="bg-purple-50 text-purple-700 border border-purple-200 py-2 rounded-xl text-xs font-semibold">👑 Admin</button>
-            <button onclick="quickLogin('staff', 'staff123')" class="bg-blue-50 text-blue-700 border border-blue-200 py-2 rounded-xl text-xs font-semibold">👔 Staff</button>
-            <button onclick="customerGuestLogin()" class="bg-emerald-50 text-emerald-700 border border-emerald-200 py-2 rounded-xl text-xs font-semibold">👤 ลูกค้า</button>
-          </div>
-        </div>
       </div>
+
+      <!-- ฟอร์มสมัครสมาชิกลูกค้า -->
       <div id="form-register" class="space-y-4 hidden">
         <div class="bg-indigo-50 text-indigo-700 p-2.5 rounded-xl text-xs text-center font-medium">สมัครสมาชิกในฐานะ: ลูกค้าทั่วไป (Customer)</div>
         <div>
@@ -837,7 +860,6 @@ def index():
       <div class="space-y-3 pt-4 border-t border-slate-800">
         <div class="flex items-center justify-between text-xs px-1 text-slate-400">
           <span class="flex items-center gap-2 text-emerald-400 font-semibold"><span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> Live Real-time</span>
-          <!-- สลับ Dark/Light Mode -->
           <button onclick="toggleDarkMode()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="สลับโหมด มืด/สว่าง">
             <i id="theme-icon" class="fa-solid fa-moon"></i>
           </button>
@@ -882,7 +904,7 @@ def index():
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200/70 dark:border-slate-800 shadow-sm flex items-center justify-between">
             <div>
-              <p class="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">ยอดขายสุทธิ</p>
+              <p class="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">ยอดขายสุทธิทั้งหมด</p>
               <h3 id="dash-rev" class="text-2xl font-extrabold text-indigo-600 dark:text-indigo-400 mt-1">0.00 ฿</h3>
             </div>
             <div class="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center text-xl"><i class="fa-solid fa-wallet"></i></div>
@@ -1108,13 +1130,8 @@ def index():
             <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">วัตถุดิบถูกตัดสต็อกตามสูตรทันทีเมื่อห้องครัวเริ่มปรุงอาหาร</p>
           </div>
           <div class="flex gap-2">
-            <!-- ปุ่มเพิ่มวัตถุดิบใหม่ -->
-            <button onclick="openAddInventoryModal()" class="bg-indigo-600 text-white text-xs px-4 py-2 rounded-xl font-semibold shadow-sm hover:bg-indigo-700 transition flex items-center gap-1.5">
-              <i class="fa-solid fa-plus"></i> เพิ่มวัตถุดิบใหม่
-            </button>
-            <button onclick="openRestockPrompt()" class="bg-slate-800 dark:bg-slate-700 text-white text-xs px-3.5 py-2 rounded-xl font-semibold shadow-sm transition">
-              <i class="fa-solid fa-pen-to-square mr-1"></i> ปรับสต็อก
-            </button>
+            <button onclick="openAddInventoryModal()" class="bg-indigo-600 text-white text-xs px-4 py-2 rounded-xl font-semibold shadow-sm hover:bg-indigo-700 transition flex items-center gap-1.5"><i class="fa-solid fa-plus"></i> เพิ่มวัตถุดิบใหม่</button>
+            <button onclick="openRestockPrompt()" class="bg-slate-800 dark:bg-slate-700 text-white text-xs px-3.5 py-2 rounded-xl font-semibold shadow-sm transition"><i class="fa-solid fa-pen-to-square mr-1"></i> ปรับสต็อก</button>
           </div>
         </div>
         <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm overflow-hidden">
@@ -1193,7 +1210,6 @@ def index():
     let cachedInventory = [];
     let uploadedImageBase64 = "";
 
-    // ระบบ Dark Mode
     function toggleDarkMode() {
       const isDark = document.documentElement.classList.toggle('dark');
       localStorage.setItem('theme', isDark ? 'dark' : 'light');
@@ -1254,17 +1270,6 @@ def index():
       }
     }
 
-    function quickLogin(u, p) {
-      document.getElementById('login-user').value = u;
-      document.getElementById('login-pass').value = p;
-      handleLogin();
-    }
-
-    function customerGuestLogin() {
-      setupSession({ name: 'ลูกค้าทั่วไป (Guest)', role: 'customer', username: 'guest', token: 'guest:customer:token' });
-      showToast('เข้าใช้งานในโหมดลูกค้าเรียบร้อย', 'success');
-    }
-
     function validateAuthInputs(u, p) {
       const userRegex = /^[a-zA-Z0-9]+$/;
       if (!userRegex.test(u)) {
@@ -1318,8 +1323,10 @@ def index():
         });
         const data = await res.json();
         if(res.ok) {
-          showToast('ลงทะเบียนลูกค้าสำเร็จ! กรุณาเข้าสู่ระบบ', 'success');
+          showToast('ลงทะเบียนลูกค้าสำเร็จ! กรุณาเข้าสู่ระบบด้วย Username/Password ที่สมัคร', 'success');
           switchAuthTab('login');
+          document.getElementById('login-user').value = u;
+          document.getElementById('login-pass').value = '';
         } else {
           showToast(data.detail || 'เกิดข้อผิดพลาดในการลงทะเบียน', 'error');
         }
@@ -1379,6 +1386,7 @@ def index():
       currentUser = null;
       document.getElementById('main-app').classList.add('hidden');
       document.getElementById('auth-screen').classList.remove('hidden');
+      document.getElementById('login-pass').value = '';
       showToast('ออกจากระบบเรียบร้อย', 'info');
     }
 
@@ -1408,7 +1416,6 @@ def index():
       if(name === 'qr') loadQrMenu();
     }
 
-    // ================= Image Logic =================
     function setImgMode(mode) {
       if(mode === 'url') {
         document.getElementById('box-img-url').classList.remove('hidden');
@@ -1467,7 +1474,6 @@ def index():
       }
     }
 
-    // ================= Menu Logic =================
     async function loadCatalogMenus() {
       const search = document.getElementById('menu-search-input').value.trim();
       const cat = document.getElementById('menu-cat-filter').value;
@@ -1694,7 +1700,7 @@ def index():
       }
     }
 
-    // ================= Admin Customer Tracker Logic =================
+    // ================= Admin Customer Tracker Logic (แสดงผลกิจกรรมลูกค้า) =================
     async function loadAdminCustomers() {
       try {
         const res = await apiFetch('/api/admin/customers');
@@ -1706,7 +1712,7 @@ def index():
           <div class="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 flex justify-between items-center text-xs">
             <div>
               <div class="font-bold text-slate-900 dark:text-white">${c.name}</div>
-              <div class="text-[11px] text-slate-400">@${c.username} • สมัคร: ${c.registered_at.split(' ')[0]}</div>
+              <div class="text-[11px] text-slate-400">@${c.username} • สมัครเมื่อ: ${c.registered_at.split(' ')[0]}</div>
             </div>
             <span class="bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 px-2 py-1 rounded-lg font-bold">⭐ ${c.points} แต้ม</span>
           </div>
@@ -1716,7 +1722,7 @@ def index():
         stream.innerHTML = data.recent_activities.map(a => `
           <div class="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 text-xs flex items-center justify-between">
             <div class="flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
               <div>
                 <b class="text-slate-900 dark:text-white">${a.user}</b>: 
                 <span class="text-slate-600 dark:text-slate-300">${a.details}</span>
@@ -1728,7 +1734,7 @@ def index():
       } catch (err) {}
     }
 
-    // ================= Dashboard Logic =================
+    // ================= Dashboard Logic (คำนวณยอดขายสดตรงๆ) =================
     async function loadDashboard() {
       try {
         const res = await apiFetch('/api/dashboard');
@@ -2004,6 +2010,7 @@ def index():
       document.getElementById('bill-table-sel').innerHTML = tables.map(t => `<option value="${t.table_id}">โต๊ะ ${t.table_id} (${t.status})</option>`).join('');
     }
 
+    // ฟังก์ชันเช็คบิล: เมื่อสำเร็จ จะเรียก loadDashboard() ทันที ยอดขายขึ้นแน่นอน
     async function executeCheckout() {
       const tid = parseInt(document.getElementById('bill-table-sel').value);
       const disc = parseFloat(document.getElementById('bill-discount').value) || 0;
@@ -2052,8 +2059,10 @@ def index():
         document.getElementById('rc-point-box').innerText = `⭐ ได้รับแต้มสะสม: +${d.earned_points} แต้ม`;
       }
 
-      showToast('เช็คบิลและพิมพ์ใบเสร็จสำเร็จ!', 'success');
+      showToast('เช็คบิลและพิมพ์ใบเสร็จสำเร็จ! ยอดขายถูกบันทึกแล้ว', 'success');
       loadTables();
+      loadCheckoutTables();
+      loadDashboard(); // รีเฟรชยอดขายขึ้น Dashboard ทันที
     }
 
     async function sendCustomerOrder() {
@@ -2139,6 +2148,7 @@ def index():
       }
     }
 
+    // Real-Time Notification SSE
     const evt = new EventSource('/api/realtime');
     evt.onmessage = function(e) {
       const ev = JSON.parse(e.data);
@@ -2150,6 +2160,9 @@ def index():
       } else if(ev.type === 'STOCK_UPDATE') {
         loadInventory();
         loadDashboard();
+      } else if(ev.type === 'DASHBOARD_UPDATE') {
+        loadDashboard();
+        loadTables();
       } else if(ev.type === 'QUEUE_UPDATE') {
         loadQueues();
       } else if(ev.type === 'CUSTOMER_ACTIVITY') {

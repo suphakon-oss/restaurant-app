@@ -17,12 +17,12 @@ try:
     import services
 except ModuleNotFoundError:
     services_path = PROJECT_ROOT / "services.py"
+    services = importlib.util.module_from_spec(spec)
     if not services_path.exists():
         raise
     spec = importlib.util.spec_from_file_location("services", services_path)
     if spec is None or spec.loader is None:
         raise ModuleNotFoundError(f"Cannot load services module: {services_path}")
-    services = importlib.util.module_from_spec(spec)
     sys.modules["services"] = services
     spec.loader.exec_module(services)
 

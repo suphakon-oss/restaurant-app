@@ -1,8 +1,3 @@
-"""
-core/database.py - ระบบจัดการฐานข้อมูล JSON และ Audit Logs
-รองรับ Vercel Serverless (/tmp) และมีรูปภาพตัวอย่างเริ่มต้น
-"""
-
 import os
 import json
 from datetime import datetime
@@ -15,11 +10,13 @@ DATA_PATH = "/tmp/restaurant_data.json" if IS_VERCEL else "restaurant_data.json"
 def get_initial_schema() -> Dict[str, Any]:
     admin_h, admin_s = hash_password("admin123")
     staff_h, staff_s = hash_password("staff123")
+    cust_h, cust_s = hash_password("customer123")
     
     return {
         "users": [
-            {"id": "u1", "username": "admin", "password_hash": admin_h, "salt": admin_s, "role": "admin", "name": "ผู้ดูแลระบบ"},
-            {"id": "u2", "username": "staff", "password_hash": staff_h, "salt": staff_s, "role": "staff", "name": "พนักงานหน้าร้าน"}
+            {"id": "u1", "username": "admin", "password_hash": admin_h, "salt": admin_s, "role": "admin", "name": "ผู้ดูแลระบบ (Admin)"},
+            {"id": "u2", "username": "staff", "password_hash": staff_h, "salt": staff_s, "role": "staff", "name": "พนักงานหน้าร้าน (Staff)"},
+            {"id": "u3", "username": "customer", "password_hash": cust_h, "salt": cust_s, "role": "customer", "name": "คุณสมชาย (ลูกค้าประจำ)", "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         ],
         "inventory": [
             {"id": "ing_1", "name": "กุ้งแม่น้ำ (ตัว)", "stock": 50, "unit": "ตัว", "min_stock": 10},
@@ -63,9 +60,11 @@ def get_initial_schema() -> Dict[str, Any]:
         "reservations": [],
         "queues": [],
         "members": [
-            {"phone": "0812345678", "name": "สมชาย ใจดี", "points": 120}
+            {"phone": "0812345678", "name": "คุณสมชาย", "points": 120}
         ],
-        "audit_logs": [],
+        "audit_logs": [
+            {"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "user": "System", "action": "SYSTEM_START", "details": "เริ่มต้นระบบสำเร็จ"}
+        ],
         "sales": []
     }
 
