@@ -1,10 +1,14 @@
+"""
+core/database.py - ระบบจัดการฐานข้อมูล JSON และ Audit Logs
+รองรับ Vercel Serverless (/tmp) และมีรูปภาพตัวอย่างเริ่มต้น
+"""
+
 import os
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from core.auth import hash_password
 
-# บน Vercel ระบบไฟล์หลักเป็น Read-Only ต้องเขียนที่ /tmp
 IS_VERCEL = bool(os.environ.get("VERCEL"))
 DATA_PATH = "/tmp/restaurant_data.json" if IS_VERCEL else "restaurant_data.json"
 
@@ -30,6 +34,7 @@ def get_initial_schema() -> Dict[str, Any]:
                 "category": "อาหารจานเดียว",
                 "price": 85.0,
                 "is_available": True,
+                "image": "https://images.unsplash.com/photo-1559847844-5315695dadae?auto=format&fit=crop&w=600&q=80",
                 "recipe": [
                     {"ingredient_id": "ing_1", "amount": 3},
                     {"ingredient_id": "ing_2", "amount": 100},
@@ -42,6 +47,7 @@ def get_initial_schema() -> Dict[str, Any]:
                 "category": "อาหารจานเดียว",
                 "price": 50.0,
                 "is_available": True,
+                "image": "https://images.unsplash.com/photo-1603133872878-684f208fb84b?auto=format&fit=crop&w=600&q=80",
                 "recipe": [
                     {"ingredient_id": "ing_3", "amount": 2},
                     {"ingredient_id": "ing_4", "amount": 1}
@@ -83,7 +89,6 @@ def save_db(data: Dict[str, Any]) -> bool:
         return False
 
 def add_audit_log(user: str, action: str, details: str):
-    """ฟังก์ชันบันทึก Log การแก้ไขข้อมูลสำคัญอย่างละเอียด"""
     try:
         db = load_db()
         log_entry = {

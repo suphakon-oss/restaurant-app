@@ -1,6 +1,6 @@
 """
 api/index.py - REST API, RBAC Authentication, Real-Time SSE and Modern Responsive UI
-อัปเดต: สมัครสิทธิ์ลูกค้าเท่านั้น, แท็บดูเมนูอาหารสำหรับทุกสิทธิ์, สตาฟ/แอดมินเพิ่มเมนูได้, ตัดสต็อกสมบูรณ์
+อัปเดต: รองรับรูปภาพเมนูทั้งแบบ URL และ Upload ไฟล์, Live Preview, แสดงรูปในเมนูและหน้าสั่ง
 """
 
 import json
@@ -54,6 +54,7 @@ class MenuCreateRequest(BaseModel):
     category: str = Field(default="อาหารจานเดียว")
     price: float = Field(..., ge=0)
     is_available: bool = True
+    image: Optional[str] = ""  # รองรับทั้ง URL และ Base64 Data URL
     recipe: List[MenuRecipeItem] = []
 
 class OrderOption(BaseModel):
@@ -139,7 +140,7 @@ async def register(req: RegisterRequest):
         "username": req.username,
         "password_hash": h,
         "salt": s,
-        "role": "customer",  # บังคับสิทธิ์เป็นลูกค้าทั่วไปเท่านั้น 100%
+        "role": "customer",
         "name": req.name
     }
     db.setdefault("users", []).append(new_user)
@@ -165,7 +166,7 @@ async def sse_notifications():
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-# ================= 4. เมนูอาหาร & CRUD =================
+# ================= 4. เมนูอาหาร & CRUD (พร้อมจัดการรูปภาพ) =================
 
 @app.get("/api/menu")
 def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: str = "asc", page: int = 1, limit: int = 50):
@@ -180,7 +181,7 @@ def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: 
 
 @app.post("/api/menu")
 def create_menu(req: MenuCreateRequest):
-    """เพิ่มเมนูใหม่ (สำหรับสิทธิ์ Staff และ Admin)"""
+    """เพิ่มเมนูใหม่พร้อมบันทึกรูปภาพ (URL หรือ Base64)"""
     db = load_db()
     new_id = max([m["id"] for m in db.get("menu", [])], default=0) + 1
     new_menu = {
@@ -189,6 +190,7 @@ def create_menu(req: MenuCreateRequest):
         "category": req.category,
         "price": req.price,
         "is_available": req.is_available,
+        "image": req.image or "",
         "recipe": [r.dict() for r in req.recipe]
     }
     db.setdefault("menu", []).append(new_menu)
@@ -198,7 +200,6 @@ def create_menu(req: MenuCreateRequest):
 
 @app.delete("/api/menu/{menu_id}")
 def delete_menu(menu_id: int):
-    """ลบเมนูอาหาร"""
     db = load_db()
     menu = next((m for m in db.get("menu", []) if m["id"] == menu_id), None)
     if not menu:
@@ -311,11 +312,12 @@ async def customer_order(req: CustomerOrderRequest):
             "table_id": req.table_id,
             "menu_id": it.menu_id,
             "name": menu_item["name"],
+            "image": menu_item.get("image", ""),
             "unit_price": menu_item["price"] + extra_price,
             "qty": it.qty,
             "options": it.options.dict() if it.options else {},
             "status": "รอทำ",
-            "stock_deducted": False,  # ตัวบ่งชี้การตัดสต็อก
+            "stock_deducted": False,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         db.setdefault("orders", []).append(new_order)
@@ -328,13 +330,12 @@ async def customer_order(req: CustomerOrderRequest):
 
 @app.post("/api/kitchen/{order_id}/status")
 async def update_kitchen_order(order_id: int, status: str = Query(...)):
-    """อัปเดตสถานะออเดอร์ในครัว และตัดสต็อกเมื่อเริ่มทำหรือเสิร์ฟเสร็จ"""
     db = load_db()
     order = next((o for o in db.get("orders", []) if o["order_id"] == order_id), None)
     if not order:
         raise HTTPException(status_code=404, detail="ไม่พบรายการออเดอร์")
 
-    # ตัดสต็อกทันทีเมื่อสถานะเปลี่ยนเป็น "กำลังทำ" หรือ "เสิร์ฟแล้ว" (ถ้ายังไม่เคยตัดสต็อก)
+    # ตัดสต็อกเมื่อเปลี่ยนสถานะเป็น "กำลังทำ" หรือ "เสิร์ฟแล้ว" (ถ้ายังไม่เคยตัด)
     if status in ("กำลังทำ", "เสิร์ฟแล้ว") and not order.get("stock_deducted", False):
         ok, msg = services.deduct_stock_in_db(db, order["menu_id"], order["qty"], "Kitchen")
         if not ok:
@@ -344,7 +345,7 @@ async def update_kitchen_order(order_id: int, status: str = Query(...)):
     order["status"] = status
     save_db(db)
     await broadcast_event("ORDER_STATUS_UPDATE", {"order_id": order_id, "status": status})
-    await broadcast_event("STOCK_UPDATE", {})  # แจ้งหน้าเว็บให้อัปเดตตัวเลขสต็อกทันที
+    await broadcast_event("STOCK_UPDATE", {})
     return {"success": True, "status": status}
 
 # ================= 7. สต็อกวัตถุดิบ (Inventory CRUD) =================
@@ -545,9 +546,9 @@ def index():
     </div>
   </div>
 
-  <!-- Modal สำหรับเพิ่มเมนูอาหารใหม่ (Staff & Admin) -->
+  <!-- ================= Modal สำหรับเพิ่มเมนูอาหารใหม่ (พร้อมจัดการรูปภาพ) ================= -->
   <div id="add-menu-modal" class="fixed inset-0 bg-black/60 z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto custom-scroll">
+    <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto custom-scroll">
       <div class="flex justify-between items-center border-b pb-3">
         <h3 class="font-extrabold text-lg text-slate-800">🍽️ เพิ่มเมนูอาหารใหม่</h3>
         <button onclick="document.getElementById('add-menu-modal').classList.add('hidden')" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-lg"></i></button>
@@ -565,6 +566,31 @@ def index():
           <div>
             <label class="text-xs font-bold text-slate-600 block mb-1">ราคา (บาท)</label>
             <input type="number" id="new-menu-price" step="0.5" placeholder="0.00" class="w-full border rounded-xl p-2.5 text-sm outline-none font-bold text-blue-600">
+          </div>
+        </div>
+
+        <!-- ตัวเลือกรูปภาพ (อัปโหลด หรือ URL) -->
+        <div class="border rounded-2xl p-3 bg-slate-50/70 space-y-2">
+          <label class="text-xs font-bold text-slate-700 block">🖼️ รูปภาพเมนูอาหาร</label>
+          <div class="flex gap-2 text-xs">
+            <button type="button" onclick="setImgMode('url')" id="btn-mode-url" class="flex-1 py-1.5 rounded-lg font-bold bg-blue-600 text-white transition">ใส่ลิงก์ (URL)</button>
+            <button type="button" onclick="setImgMode('upload')" id="btn-mode-upload" class="flex-1 py-1.5 rounded-lg font-bold bg-slate-200 text-slate-700 transition">อัปโหลดไฟล์</button>
+          </div>
+
+          <!-- ช่องใส่ URL -->
+          <div id="box-img-url">
+            <input type="url" id="new-menu-img-url" oninput="previewImage()" placeholder="https://example.com/food.jpg" class="w-full border rounded-xl p-2 text-xs bg-white outline-none">
+          </div>
+
+          <!-- ช่องอัปโหลดไฟล์ -->
+          <div id="box-img-upload" class="hidden">
+            <input type="file" id="new-menu-img-file" accept="image/*" onchange="handleFileUpload(event)" class="w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+          </div>
+
+          <!-- Preview รูปภาพ -->
+          <div id="menu-img-preview-box" class="hidden mt-2 text-center">
+            <p class="text-[10px] text-slate-400 mb-1">ตัวอย่างรูปภาพ:</p>
+            <img id="menu-img-preview" src="" alt="Preview" class="h-28 w-full object-cover rounded-xl border mx-auto shadow-sm">
           </div>
         </div>
 
@@ -623,7 +649,7 @@ def index():
         </div>
       </div>
 
-      <!-- ฟอร์มสมัครสมาชิก (สมัครได้เฉพาะสิทธิ์ลูกค้าทั่วไปเท่านั้น) -->
+      <!-- ฟอร์มสมัครสมาชิก (ลูกค้าทั่วไปเท่านั้น) -->
       <div id="form-register" class="space-y-4 hidden">
         <div class="bg-blue-50/70 border border-blue-100 rounded-xl p-2.5 text-center text-xs text-blue-700 font-semibold">
           <i class="fa-solid fa-user mr-1"></i> สมัครสมาชิกในฐานะ: ลูกค้าทั่วไป (Customer)
@@ -660,10 +686,7 @@ def index():
         </div>
 
         <nav class="space-y-1 text-sm font-medium">
-          <!-- เมนูที่ทุกสิทธิ์สามารถดูได้ -->
           <button onclick="switchTab('menu')" id="nav-menu" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-book-open w-5 text-amber-400"></i> เมนูอาหาร</button>
-          
-          <!-- เมนูเฉพาะ Admin & Staff -->
           <button onclick="switchTab('dash')" id="nav-dash" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-chart-pie w-5 text-blue-400"></i> Dashboard สรุป</button>
           <button onclick="switchTab('tables')" id="nav-tables" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-chair w-5 text-emerald-400"></i> แผนผังโต๊ะ & POS</button>
           <button onclick="switchTab('kitchen')" id="nav-kitchen" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-fire-burner w-5 text-amber-400"></i> จอครัว (KDS)</button>
@@ -671,8 +694,6 @@ def index():
           <button onclick="switchTab('inventory')" id="nav-inventory" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-boxes-stacked w-5 text-purple-400"></i> สต็อกวัตถุดิบ</button>
           <button onclick="switchTab('queue')" id="nav-queue" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-users-line w-5 text-pink-400"></i> คิว & จองโต๊ะ</button>
           <button onclick="switchTab('logs')" id="nav-logs" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-clock-rotate-left w-5 text-rose-400"></i> Audit Logs</button>
-
-          <!-- เมนูสั่งอาหาร QR สำหรับลูกค้า -->
           <button onclick="switchTab('qr')" id="nav-qr" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-mobile-screen w-5 text-teal-400"></i> ลูกค้าสั่งเอง (QR)</button>
         </nav>
       </div>
@@ -693,14 +714,13 @@ def index():
     <!-- Main Content Display -->
     <main class="flex-1 overflow-y-auto p-8 custom-scroll">
 
-      <!-- ================= 0. TAB: ดูเมนูอาหารภายในร้าน (ทุกสิทธิ์เข้าถึงได้) ================= -->
+      <!-- ================= 0. TAB: ดูเมนูอาหารภายในร้าน (พร้อมรูปภาพสวยงาม) ================= -->
       <section id="pane-menu" class="space-y-6 hidden">
         <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
             <h2 class="text-2xl font-black text-slate-800">📋 เมนูอาหารและเครื่องดื่ม</h2>
-            <p class="text-xs text-slate-500">รายการเมนูทั้งหมดของทางร้าน ทุกสิทธิ์สามารถดูรายละเอียดได้</p>
+            <p class="text-xs text-slate-500">รายการเมนูทั้งหมดของทางร้าน พร้อมรูปภาพและสูตรวัตถุดิบ</p>
           </div>
-          <!-- ปุ่มเพิ่มเมนู (แสดงเฉพาะ Staff และ Admin) -->
           <div id="menu-staff-controls" class="hidden">
             <button onclick="openAddMenuModal()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-4 py-2.5 rounded-xl font-bold shadow-sm transition flex items-center gap-2">
               <i class="fa-solid fa-plus"></i> เพิ่มเมนูใหม่
@@ -719,8 +739,8 @@ def index():
           </div>
         </div>
 
-        <!-- รายการการ์ดเมนูอาหาร -->
-        <div id="menu-catalog-grid" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4"></div>
+        <!-- รายการการ์ดเมนูอาหารพร้อมรูปภาพ -->
+        <div id="menu-catalog-grid" class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-5"></div>
       </section>
 
       <!-- ================= 1. TAB: Dashboard ================= -->
@@ -800,7 +820,7 @@ def index():
         <div id="kds-grid" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
       </section>
 
-      <!-- ================= 4. TAB: ลูกค้าสั่งเอง (QR Self-Order) ================= -->
+      <!-- ================= 4. TAB: ลูกค้าสั่งเอง (QR Self-Order พร้อมดูรูปภาพ) ================= -->
       <section id="pane-qr" class="space-y-6 hidden">
         <div class="max-w-lg mx-auto bg-white p-6 rounded-3xl border shadow-xl space-y-4">
           <div class="text-center border-b pb-4">
@@ -814,8 +834,18 @@ def index():
             </div>
             <div>
               <label class="text-xs font-bold text-slate-600 block mb-1">เลือกเมนูอาหาร</label>
-              <select id="qr-select-menu" class="w-full border rounded-xl p-2.5 text-sm bg-white"></select>
+              <select id="qr-select-menu" onchange="updateQrMenuPreview()" class="w-full border rounded-xl p-2.5 text-sm bg-white"></select>
             </div>
+
+            <!-- กล่องแสดงรูปเมนูที่ลูกค้ากำลังเลือก -->
+            <div id="qr-dish-preview" class="border rounded-2xl overflow-hidden bg-slate-50 hidden">
+              <img id="qr-dish-img" src="" alt="Menu" class="h-36 w-full object-cover">
+              <div class="p-2.5 flex justify-between items-center text-xs">
+                <span id="qr-dish-name" class="font-extrabold text-slate-800"></span>
+                <span id="qr-dish-price" class="font-black text-blue-600"></span>
+              </div>
+            </div>
+
             <div class="grid grid-cols-3 gap-2">
               <div>
                 <label class="text-[11px] font-bold text-slate-500">ความเผ็ด</label>
@@ -986,6 +1016,7 @@ def index():
     let currentTable = null;
     let cachedMenu = [];
     let cachedInventory = [];
+    let uploadedImageBase64 = "";
 
     function showToast(msg, type = 'info') {
       const box = document.getElementById('toast-container');
@@ -1124,7 +1155,6 @@ def index():
         });
         switchTab('menu');
       } else {
-        // Customer: ดูเมนู, สั่งอาหาร QR, คิว
         ['menu', 'qr', 'queue'].forEach(t => {
           document.getElementById('nav-' + t).classList.remove('hidden');
         });
@@ -1165,7 +1195,61 @@ def index():
       if(name === 'qr') loadQrMenu();
     }
 
-    // ================= ฟังก์ชันดูเมนูอาหาร & เพิ่มเมนู =================
+    // ================= จัดการรูปภาพในเมนู =================
+    function setImgMode(mode) {
+      if(mode === 'url') {
+        document.getElementById('box-img-url').classList.remove('hidden');
+        document.getElementById('box-img-upload').classList.add('hidden');
+        document.getElementById('btn-mode-url').className = 'flex-1 py-1.5 rounded-lg font-bold bg-blue-600 text-white transition';
+        document.getElementById('btn-mode-upload').className = 'flex-1 py-1.5 rounded-lg font-bold bg-slate-200 text-slate-700 transition';
+        uploadedImageBase64 = "";
+        previewImage();
+      } else {
+        document.getElementById('box-img-url').classList.add('hidden');
+        document.getElementById('box-img-upload').classList.remove('hidden');
+        document.getElementById('btn-mode-upload').className = 'flex-1 py-1.5 rounded-lg font-bold bg-blue-600 text-white transition';
+        document.getElementById('btn-mode-url').className = 'flex-1 py-1.5 rounded-lg font-bold bg-slate-200 text-slate-700 transition';
+        document.getElementById('new-menu-img-url').value = "";
+        previewImage();
+      }
+    }
+
+    function handleFileUpload(event) {
+      const file = event.target.files[0];
+      if (file) {
+        if (file.size > 3 * 1024 * 1024) {
+          showToast('ไฟล์รูปภาพต้องมีขนาดไม่เกิน 3MB', 'error');
+          event.target.value = "";
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          uploadedImageBase64 = e.target.result;
+          document.getElementById('menu-img-preview').src = uploadedImageBase64;
+          document.getElementById('menu-img-preview-box').classList.remove('hidden');
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    function previewImage() {
+      const url = document.getElementById('new-menu-img-url').value.trim();
+      const preview = document.getElementById('menu-img-preview');
+      const box = document.getElementById('menu-img-preview-box');
+
+      if (uploadedImageBase64) {
+        preview.src = uploadedImageBase64;
+        box.classList.remove('hidden');
+      } else if (url) {
+        preview.src = url;
+        box.classList.remove('hidden');
+      } else {
+        preview.src = "";
+        box.classList.add('hidden');
+      }
+    }
+
+    // ================= โหลดและแสดงแคตตาล็อกเมนู =================
     async function loadCatalogMenus() {
       const search = document.getElementById('menu-search-input').value.trim();
       const cat = document.getElementById('menu-cat-filter').value;
@@ -1190,27 +1274,39 @@ def index():
           return `${invItem ? invItem.name : r.ingredient_id} (${r.amount})`;
         }).join(', ') : 'ไม่มีสูตรตัดสต็อก';
 
+        let imgHtml = m.image ? 
+          `<img src="${m.image}" alt="${m.name}" class="h-44 w-full object-cover rounded-t-2xl">` : 
+          `<div class="h-44 w-full bg-slate-100 flex flex-col items-center justify-center text-slate-300 rounded-t-2xl">
+            <i class="fa-solid fa-bowl-food text-4xl mb-1"></i>
+            <span class="text-[10px] text-slate-400">ไม่มีรูปภาพ</span>
+           </div>`;
+
         return `
-          <div class="bg-white p-4 rounded-2xl border shadow-sm flex flex-col justify-between hover:shadow-md transition">
-            <div>
-              <div class="flex justify-between items-start mb-2">
-                <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">${m.category}</span>
-                <span class="text-[10px] font-extrabold px-2 py-0.5 rounded-full ${m.is_available ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}">
-                  ${m.is_available ? 'พร้อมขาย' : 'หมด'}
-                </span>
-              </div>
-              <h4 class="font-black text-base text-slate-800">${m.name}</h4>
-              <p class="text-xs text-slate-400 mt-1 line-clamp-1" title="${recipeTxt}"><i class="fa-solid fa-boxes-stacked mr-1"></i>${recipeTxt}</p>
+          <div class="bg-white rounded-2xl border shadow-sm flex flex-col justify-between hover:shadow-md transition overflow-hidden">
+            <div class="relative">
+              ${imgHtml}
+              <span class="absolute top-2 right-2 text-[10px] font-extrabold px-2 py-0.5 rounded-full shadow-sm ${m.is_available ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'}">
+                ${m.is_available ? 'พร้อมขาย' : 'หมด'}
+              </span>
+              <span class="absolute bottom-2 left-2 text-[10px] font-bold px-2 py-0.5 rounded-md bg-black/60 text-white backdrop-blur-sm">
+                ${m.category}
+              </span>
             </div>
-            <div class="mt-4 pt-3 border-t">
-              <div class="text-blue-600 font-black text-lg mb-3">${m.price.toFixed(2)} ฿</div>
-              <div class="flex gap-2">
-                ${isStaffOrAdmin ? `
-                  <button onclick="toggleMenu(${m.id})" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs py-1.5 rounded-xl font-bold transition">สลับสถานะ</button>
-                  <button onclick="deleteMenu(${m.id})" class="text-slate-400 hover:text-rose-600 px-2 py-1.5 rounded-xl text-xs" title="ลบเมนู"><i class="fa-solid fa-trash-can"></i></button>
-                ` : `
-                  <button onclick="quickOrderMenu(${m.id})" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 rounded-xl font-bold transition">สั่งเมนูนี้ (QR)</button>
-                `}
+            <div class="p-4 flex-1 flex flex-col justify-between">
+              <div>
+                <h4 class="font-black text-base text-slate-800">${m.name}</h4>
+                <p class="text-xs text-slate-400 mt-1 line-clamp-1" title="${recipeTxt}"><i class="fa-solid fa-boxes-stacked mr-1"></i>${recipeTxt}</p>
+              </div>
+              <div class="mt-4 pt-3 border-t">
+                <div class="text-blue-600 font-black text-lg mb-3">${m.price.toFixed(2)} ฿</div>
+                <div class="flex gap-2">
+                  ${isStaffOrAdmin ? `
+                    <button onclick="toggleMenu(${m.id})" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs py-1.5 rounded-xl font-bold transition">สลับสถานะ</button>
+                    <button onclick="deleteMenu(${m.id})" class="text-slate-400 hover:text-rose-600 px-2 py-1.5 rounded-xl text-xs" title="ลบเมนู"><i class="fa-solid fa-trash-can"></i></button>
+                  ` : `
+                    <button onclick="quickOrderMenu(${m.id})" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 rounded-xl font-bold transition">สั่งเมนูนี้ (QR)</button>
+                  `}
+                </div>
               </div>
             </div>
           </div>
@@ -1236,6 +1332,7 @@ def index():
     function quickOrderMenu(mid) {
       switchTab('qr');
       document.getElementById('qr-select-menu').value = mid;
+      updateQrMenuPreview();
     }
 
     async function openAddMenuModal() {
@@ -1243,6 +1340,14 @@ def index():
       cachedInventory = await invRes.json();
       document.getElementById('recipe-rows-container').innerHTML = '';
       addRecipeRow();
+      
+      // รีเซ็ตรูปภาพ
+      uploadedImageBase64 = "";
+      document.getElementById('new-menu-img-url').value = "";
+      document.getElementById('new-menu-img-file').value = "";
+      document.getElementById('menu-img-preview-box').classList.add('hidden');
+      setImgMode('url');
+
       document.getElementById('add-menu-modal').classList.remove('hidden');
     }
 
@@ -1264,6 +1369,8 @@ def index():
       const name = document.getElementById('new-menu-name').value.trim();
       const cat = document.getElementById('new-menu-cat').value.trim();
       const price = parseFloat(document.getElementById('new-menu-price').value);
+      const imgUrl = document.getElementById('new-menu-img-url').value.trim();
+      const finalImage = uploadedImageBase64 || imgUrl || "";
 
       if(!name || isNaN(price) || price < 0) {
         return showToast('กรุณากรอกชื่อและราคาให้ถูกต้อง', 'error');
@@ -1285,6 +1392,7 @@ def index():
           name: name,
           category: cat || 'อาหารจานเดียว',
           price: price,
+          image: finalImage,
           is_available: true,
           recipe: recipe
         })
@@ -1408,10 +1516,15 @@ def index():
       cachedMenu = mData.items;
 
       document.getElementById('pos-menu-list').innerHTML = cachedMenu.map(m => `
-        <div class="border p-2.5 rounded-xl text-center bg-slate-50 hover:bg-slate-100 transition">
-          <div class="font-bold text-xs truncate">${m.name}</div>
-          <div class="text-blue-600 text-xs font-bold my-1">${m.price} ฿</div>
-          <button onclick="posAdd(${m.id})" class="bg-blue-600 text-white text-[11px] px-2 py-1 rounded-lg hover:bg-blue-700 w-full font-bold">+ สั่ง</button>
+        <div class="border p-2 rounded-xl text-center bg-slate-50 hover:bg-slate-100 transition flex flex-col justify-between">
+          <div class="h-20 w-full mb-1.5 overflow-hidden rounded-lg bg-slate-200">
+            ${m.image ? `<img src="${m.image}" alt="${m.name}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center text-slate-400 text-xs"><i class="fa-solid fa-utensils"></i></div>`}
+          </div>
+          <div>
+            <div class="font-bold text-xs truncate">${m.name}</div>
+            <div class="text-blue-600 text-xs font-bold my-1">${m.price} ฿</div>
+          </div>
+          <button onclick="posAdd(${m.id})" class="bg-blue-600 text-white text-[11px] px-2 py-1 rounded-lg hover:bg-blue-700 w-full font-bold mt-1">+ สั่ง</button>
         </div>
       `).join('');
 
@@ -1441,7 +1554,6 @@ def index():
       loadTableOrders(currentTable);
     }
 
-    // ================= KDS: จอครัวพร้อมตัดสต็อก =================
     async function loadKitchenOrders() {
       const res = await fetch('/api/orders');
       const orders = await res.json();
@@ -1648,11 +1760,28 @@ def index():
     async function loadQrMenu() {
       const res = await fetch('/api/menu?limit=50');
       const d = await res.json();
+      cachedMenu = d.items;
       document.getElementById('qr-select-menu').innerHTML = d.items.map(m => `<option value="${m.id}">${m.name} (${m.price} ฿)</option>`).join('');
 
       const tRes = await fetch('/api/tables');
       const tables = await tRes.json();
       document.getElementById('qr-table-num').innerHTML = tables.map(t => `<option value="${t.table_id}">โต๊ะ ${t.table_id}</option>`).join('');
+      
+      updateQrMenuPreview();
+    }
+
+    function updateQrMenuPreview() {
+      const mid = parseInt(document.getElementById('qr-select-menu').value);
+      const item = cachedMenu.find(m => m.id === mid);
+      const box = document.getElementById('qr-dish-preview');
+      if (item && item.image) {
+        document.getElementById('qr-dish-img').src = item.image;
+        document.getElementById('qr-dish-name').innerText = item.name;
+        document.getElementById('qr-dish-price').innerText = item.price.toFixed(2) + ' ฿';
+        box.classList.remove('hidden');
+      } else {
+        box.classList.add('hidden');
+      }
     }
 
     function openMoveModal() {
