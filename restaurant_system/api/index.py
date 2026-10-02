@@ -1,9 +1,3 @@
-
-"""
-api/index.py - REST API, RBAC Authentication, Real-Time SSE and Full-Feature Modern UI
-อัปเดต: เชื่อมโยงยอดขายเข้าแดชบอร์ดทันที, กิจกรรมลูกค้าเรียลไทม์, เอาปุ่มทดสอบด่วนออก, ปลอดภัยไร้บั๊ก
-"""
-
 import json
 import asyncio
 import re
@@ -190,11 +184,9 @@ async def register(req: RegisterRequest):
 
 @app.get("/api/admin/customers")
 def get_admin_customers(x_auth_token: Optional[str] = Header(None)):
-    """API สำหรับ Admin: ดูรายชื่อลูกค้า และประวัติกิจกรรมที่ลูกค้าทำในเว็บ"""
     require_role(x_auth_token, ["admin"])
     db = load_db()
     customers = [u for u in db.get("users", []) if u.get("role") == "customer"]
-    
     member_map = {m.get("phone", ""): m.get("points", 0) for m in db.get("members", [])}
     
     customer_list = []
@@ -208,7 +200,6 @@ def get_admin_customers(x_auth_token: Optional[str] = Header(None)):
         })
 
     logs = db.get("audit_logs", [])
-    # ดึงกิจกรรมของลูกค้าทั้งหมด
     customer_activities = [
         l for l in logs 
         if l.get("action", "").startswith("CUSTOMER_") or l.get("action") in ("REGISTER", "CUSTOMER_REGISTER", "CUSTOMER_ORDER", "CUSTOMER_QUEUE", "CUSTOMER_RESERVE", "CUSTOMER_CHECKOUT")
@@ -358,7 +349,7 @@ def merge_table_route(req: MergeTableRequest, x_auth_token: Optional[str] = Head
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
 
-# ================= 6. สั่งอาหาร & จอครัว =================
+# ================= 6. สั่งอาหาร & จอครัว (แก้ปัญหาคำสั่งชนกัน) =================
 
 @app.get("/api/orders")
 def get_orders(table_id: Optional[int] = None):
@@ -377,7 +368,6 @@ async def customer_order(req: CustomerOrderRequest, x_auth_token: Optional[str] 
     if not req.items:
         raise HTTPException(status_code=400, detail="กรุณาเลือกรายการอาหาร")
 
-    # ค้นหาชื่อผู้สั่ง
     actor_name = f"ลูกค้า (โต๊ะ {req.table_id})"
     if x_auth_token:
         u = parse_token(x_auth_token)
@@ -437,8 +427,9 @@ async def update_kitchen_order(order_id: int, status: str = Query(...), x_auth_t
     db = load_db()
     order = next((o for o in db.get("orders", []) if o["order_id"] == order_id), None)
     if not order:
-        raise HTTPException(status_code=404, detail="ไม่พบรายการออเดอร์")
+        raise HTTPException(status_code=404, detail="ไม่พบรายการออเดอร์ (อาจถูกปรับไปแล้ว)")
 
+    # ตัดสต็อกถ้ายังไม่เคยตัด
     if status in ("กำลังทำ", "เสิร์ฟแล้ว") and not order.get("stock_deducted", False):
         ok, msg = services.deduct_stock_in_db(db, order["menu_id"], order["qty"], user.get("role", "Kitchen"))
         if not ok:
@@ -447,6 +438,8 @@ async def update_kitchen_order(order_id: int, status: str = Query(...), x_auth_t
 
     order["status"] = status
     save_db(db)
+    
+    # ส่งสัญญาณอัปเดตแบบเบาบาง ไม่ทำให้หน้าเว็บกระตุก
     await broadcast_event("ORDER_STATUS_UPDATE", {"order_id": order_id, "status": status})
     await broadcast_event("STOCK_UPDATE", {})
     return {"success": True, "status": status}
@@ -562,7 +555,7 @@ async def create_reservation(req: ReservationRequest):
     await broadcast_event("CUSTOMER_ACTIVITY", {"user": name, "action": "CUSTOMER_RESERVE", "desc": f"จองโต๊ะ {req.date} ({req.party_size} ท่าน)"})
     return {"success": True, "reservation": res_entry}
 
-# ================= 9. เช็คบิล / ใบเสร็จ & อัปเดตยอดขายสดเข้า Dashboard =================
+# ================= 9. เช็คบิล / ใบเสร็จ =================
 
 @app.post("/api/checkout")
 async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Header(None)):
@@ -610,10 +603,8 @@ async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Hea
     add_audit_log(user.get("role", "Cashier"), "CUSTOMER_CHECKOUT", f"เช็คบิลโต๊ะ {req.table_id} ยอดสุทธิ {net} ฿")
     save_db(db)
 
-    # ส่งสัญญาณ Real-time กระตุ้นให้ Dashboard อัปเดตทันที
     await broadcast_event("DASHBOARD_UPDATE", {"revenue": net})
     await broadcast_event("CUSTOMER_ACTIVITY", {"user": f"โต๊ะ {req.table_id}", "action": "CUSTOMER_CHECKOUT", "desc": f"ชำระเงินเรียบร้อย ยอด {net} ฿"})
-    
     return {"success": True, "receipt": receipt, "earned_points": earned_pts}
 
 # ================= 10. Dashboard & Audit Logs =================
@@ -628,7 +619,6 @@ def get_dashboard(x_auth_token: Optional[str] = Header(None)):
     occupied_tables = sum(1 for t in db.get("tables", []) if t.get("status") != "ว่าง")
     low_stock = [i for i in db.get("inventory", []) if i.get("stock", 0) <= i.get("min_stock", 10)]
 
-    # คำนวณ 5 อันดับเมนูขายดีจากประวัติการขายจริงทั้งหมด
     item_sales_counter = {}
     for s in sales:
         for it in s.get("items", []):
@@ -786,7 +776,7 @@ def index():
     </div>
   </div>
 
-  <!-- Auth Screen (เอาปุ่มทดสอบด่วนออก ให้กรอกรหัสจริง) -->
+  <!-- Auth Screen -->
   <div id="auth-screen" class="min-h-screen flex items-center justify-center bg-slate-900 p-4 relative overflow-hidden">
     <div class="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl relative z-10 space-y-6">
       <div class="text-center space-y-2">
@@ -800,7 +790,6 @@ def index():
         <button id="auth-tab-reg" onclick="switchAuthTab('register')" class="flex-1 py-2 rounded-xl text-slate-500 transition">สมัครสมาชิก</button>
       </div>
 
-      <!-- ฟอร์มเข้าสู่ระบบ (สะอาด ไม่มีปุ่มลัด) -->
       <div id="form-login" class="space-y-4">
         <div>
           <label class="text-xs font-semibold text-slate-700 block mb-1">ชื่อผู้ใช้งาน</label>
@@ -813,7 +802,6 @@ def index():
         <button onclick="handleLogin()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl text-sm shadow-md transition">เข้าสู่ระบบ</button>
       </div>
 
-      <!-- ฟอร์มสมัครสมาชิกลูกค้า -->
       <div id="form-register" class="space-y-4 hidden">
         <div class="bg-indigo-50 text-indigo-700 p-2.5 rounded-xl text-xs text-center font-medium">สมัครสมาชิกในฐานะ: ลูกค้าทั่วไป (Customer)</div>
         <div>
@@ -1300,7 +1288,7 @@ def index():
           setupSession(data);
           showToast(`ยินดีต้อนรับคุณ ${data.name}!`, 'success');
         } else {
-          showToast(data.detail || 'เข้าสู่ระบบไม่สำเร็จ', 'error');
+          showToast(data.detail || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง', 'error');
         }
       } catch (err) {
         showToast('เกิดข้อผิดพลาดในการเชื่อมต่อ', 'error');
@@ -1416,6 +1404,7 @@ def index():
       if(name === 'qr') loadQrMenu();
     }
 
+    // Image Handlers
     function setImgMode(mode) {
       if(mode === 'url') {
         document.getElementById('box-img-url').classList.remove('hidden');
@@ -1474,6 +1463,7 @@ def index():
       }
     }
 
+    // Menu Logic
     async function loadCatalogMenus() {
       const search = document.getElementById('menu-search-input').value.trim();
       const cat = document.getElementById('menu-cat-filter').value;
@@ -1627,7 +1617,7 @@ def index():
       }
     }
 
-    // ================= Inventory Logic (เพิ่มวัตถุดิบใหม่) =================
+    // Inventory Logic
     function openAddInventoryModal() {
       document.getElementById('new-inv-name').value = '';
       document.getElementById('new-inv-stock').value = '';
@@ -1700,7 +1690,7 @@ def index():
       }
     }
 
-    // ================= Admin Customer Tracker Logic (แสดงผลกิจกรรมลูกค้า) =================
+    // Admin Customer Tracker Logic
     async function loadAdminCustomers() {
       try {
         const res = await apiFetch('/api/admin/customers');
@@ -1734,7 +1724,7 @@ def index():
       } catch (err) {}
     }
 
-    // ================= Dashboard Logic (คำนวณยอดขายสดตรงๆ) =================
+    // Dashboard Logic
     async function loadDashboard() {
       try {
         const res = await apiFetch('/api/dashboard');
@@ -1893,40 +1883,64 @@ def index():
       }
     }
 
+    // ================= KDS Logic: มีระบบ Debounce และ Lock Button ป้องกันกดรัว =================
+    let isKitchenLoading = false;
+    let kitchenDebounceTimer = null;
+
     async function loadKitchenOrders() {
-      const res = await apiFetch('/api/orders');
-      const orders = await res.json();
-      const active = orders.filter(o => o.status === 'รอทำ' || o.status === 'กำลังทำ');
-      const grid = document.getElementById('kds-grid');
-      grid.innerHTML = active.map(o => `
-        <div class="bg-white dark:bg-slate-900 p-5 rounded-3xl border-2 ${o.status === 'รอทำ' ? 'border-amber-400' : 'border-indigo-500'} shadow-sm space-y-3">
-          <div class="flex justify-between items-center text-xs">
-            <span class="font-extrabold text-sm px-2.5 py-1 rounded-lg ${o.status === 'รอทำ' ? 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-400' : 'bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400'}">โต๊ะ ${o.table_id}</span>
-            <span class="text-slate-400 font-mono"><i class="fa-regular fa-clock mr-1"></i>${o.created_at.split(' ')[1]}</span>
-          </div>
-          <div>
-            <h4 class="font-extrabold text-base text-slate-900 dark:text-white">${o.name} <span class="text-indigo-600 dark:text-indigo-400">x${o.qty}</span></h4>
-            ${o.options ? `<p class="text-xs text-slate-500 dark:text-slate-400 mt-1 bg-slate-50 dark:bg-slate-800 p-2 rounded-xl">ตัวเลือก: ${o.options.spiciness || ''} | ${o.options.egg || ''} | ${o.options.size || ''}</p>` : ''}
-          </div>
-          <div class="flex gap-2 pt-2">
-            ${o.status === 'รอทำ' ? `<button onclick="kitchenAction(${o.order_id}, 'กำลังทำ')" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2 rounded-xl font-semibold flex-1 transition shadow-sm">เริ่มทำ (ตัดสต็อก)</button>` : ''}
-            <button onclick="kitchenAction(${o.order_id}, 'เสิร์ฟแล้ว')" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-2 rounded-xl font-semibold flex-1 transition shadow-sm">เสิร์ฟแล้ว</button>
-          </div>
-        </div>
-      `).join('') || '<p class="text-slate-400 text-xs col-span-3 text-center py-12 font-medium">ไม่มีออเดอร์ค้างทำในห้องครัว 🎉</p>';
+      // ใช้ Debounce ป้องกันการเรียกซ้ำซ้อนในเสี้ยววินาทีเดียวกัน
+      if (kitchenDebounceTimer) clearTimeout(kitchenDebounceTimer);
+      kitchenDebounceTimer = setTimeout(async () => {
+        try {
+          const res = await apiFetch('/api/orders');
+          const orders = await res.json();
+          const active = orders.filter(o => o.status === 'รอทำ' || o.status === 'กำลังทำ');
+          const grid = document.getElementById('kds-grid');
+          grid.innerHTML = active.map(o => `
+            <div class="bg-white dark:bg-slate-900 p-5 rounded-3xl border-2 ${o.status === 'รอทำ' ? 'border-amber-400' : 'border-indigo-500'} shadow-sm space-y-3 transition-all">
+              <div class="flex justify-between items-center text-xs">
+                <span class="font-extrabold text-sm px-2.5 py-1 rounded-lg ${o.status === 'รอทำ' ? 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-400' : 'bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400'}">โต๊ะ ${o.table_id}</span>
+                <span class="text-slate-400 font-mono"><i class="fa-regular fa-clock mr-1"></i>${o.created_at.split(' ')[1]}</span>
+              </div>
+              <div>
+                <h4 class="font-extrabold text-base text-slate-900 dark:text-white">${o.name} <span class="text-indigo-600 dark:text-indigo-400">x${o.qty}</span></h4>
+                ${o.options ? `<p class="text-xs text-slate-500 dark:text-slate-400 mt-1 bg-slate-50 dark:bg-slate-800 p-2 rounded-xl">ตัวเลือก: ${o.options.spiciness || ''} | ${o.options.egg || ''} | ${o.options.size || ''}</p>` : ''}
+              </div>
+              <div class="flex gap-2 pt-2">
+                ${o.status === 'รอทำ' ? `<button onclick="kitchenAction(${o.order_id}, 'กำลังทำ', this)" class="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs px-3 py-2 rounded-xl font-semibold flex-1 transition shadow-sm">เริ่มทำ (ตัดสต็อก)</button>` : ''}
+                <button onclick="kitchenAction(${o.order_id}, 'เสิร์ฟแล้ว', this)" class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs px-3 py-2 rounded-xl font-semibold flex-1 transition shadow-sm">เสิร์ฟแล้ว</button>
+              </div>
+            </div>
+          `).join('') || '<p class="text-slate-400 text-xs col-span-3 text-center py-12 font-medium">ไม่มีออเดอร์ค้างทำในห้องครัว 🎉</p>';
+        } catch (err) {}
+      }, 50);
     }
 
-    async function kitchenAction(oid, st) {
-      const res = await apiFetch(`/api/kitchen/${oid}/status?status=${encodeURIComponent(st)}`, { method: 'POST' });
-      const data = await res.json();
-      if(!res.ok) {
-        showToast(data.detail || 'ไม่สามารถตัดสต็อกได้', 'error');
-      } else {
-        showToast(`อัปเดตสถานะเป็น "${st}" สำเร็จ`, 'success');
+    async function kitchenAction(oid, st, btn) {
+      // ล็อกปุ่มทันทีเพื่อป้องกันการกดซ้ำรัวๆ
+      if (btn) {
+        btn.disabled = true;
+        const originalText = btn.innerHTML;
+        btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin mr-1"></i>กำลังบันทึก...`;
       }
-      loadKitchenOrders();
-      loadInventory();
-      loadDashboard();
+
+      try {
+        const res = await apiFetch(`/api/kitchen/${oid}/status?status=${encodeURIComponent(st)}`, { method: 'POST' });
+        const data = await res.json();
+        if(!res.ok) {
+          showToast(data.detail || 'ไม่สามารถตัดสต็อกได้', 'error');
+          if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
+        } else {
+          showToast(`อัปเดตสถานะเป็น "${st}" สำเร็จ`, 'success');
+        }
+      } catch (err) {
+        showToast('เกิดข้อผิดพลาดในการเชื่อมต่อ', 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
+      } finally {
+        loadKitchenOrders();
+        loadInventory();
+        loadDashboard();
+      }
     }
 
     async function loadQueues() {
@@ -2010,7 +2024,6 @@ def index():
       document.getElementById('bill-table-sel').innerHTML = tables.map(t => `<option value="${t.table_id}">โต๊ะ ${t.table_id} (${t.status})</option>`).join('');
     }
 
-    // ฟังก์ชันเช็คบิล: เมื่อสำเร็จ จะเรียก loadDashboard() ทันที ยอดขายขึ้นแน่นอน
     async function executeCheckout() {
       const tid = parseInt(document.getElementById('bill-table-sel').value);
       const disc = parseFloat(document.getElementById('bill-discount').value) || 0;
@@ -2059,10 +2072,10 @@ def index():
         document.getElementById('rc-point-box').innerText = `⭐ ได้รับแต้มสะสม: +${d.earned_points} แต้ม`;
       }
 
-      showToast('เช็คบิลและพิมพ์ใบเสร็จสำเร็จ! ยอดขายถูกบันทึกแล้ว', 'success');
+      showToast('เช็คบิลสำเร็จ! ยอดขายถูกบันทึกแล้ว', 'success');
       loadTables();
       loadCheckoutTables();
-      loadDashboard(); // รีเฟรชยอดขายขึ้น Dashboard ทันที
+      loadDashboard();
     }
 
     async function sendCustomerOrder() {
@@ -2148,7 +2161,7 @@ def index():
       }
     }
 
-    // Real-Time Notification SSE
+    // Real-Time SSE Listener
     const evt = new EventSource('/api/realtime');
     evt.onmessage = function(e) {
       const ev = JSON.parse(e.data);
