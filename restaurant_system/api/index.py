@@ -15,7 +15,7 @@ import core.services as services
 
 app = FastAPI(title="Smart Restaurant Pro Enterprise", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
-# Error Handlers
+# Error Handlers ป้องกัน Traceback 500
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = exc.errors()
@@ -774,12 +774,15 @@ def index():
     </div>
   </div>
 
-  <!-- Auth Screen: แก้ปัญหาสีตัวหนังสือให้มองเห็นชัดเจน 100% -->
-  <!-- ปุ่มสลับธีม มืด/สว่าง ที่หน้า Login (มุมขวาบน) -->
+  <!-- Auth Screen (มีปุ่มสลับโหมดมืด/สว่างที่มุมขวาบน และตัวหนังสือชัดเจน 100%) -->
+  <div id="auth-screen" class="min-h-screen flex items-center justify-center bg-slate-100 dark:bg-slate-900 p-4 relative overflow-hidden transition-colors duration-200">
+    
+    <!-- ปุ่มสลับธีม มืด/สว่าง หน้า Login (มุมขวาบน) -->
     <button onclick="toggleDarkMode()" class="absolute top-5 right-5 z-20 p-3 rounded-2xl bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 shadow-md transition" title="สลับโหมด มืด/สว่าง">
       <i id="auth-theme-icon" class="fa-solid fa-moon text-base"></i>
     </button>
-    <div class="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full shadow-2xl relative z-10 space-y-6 border border-slate-100 dark:border-slate-800">
+
+    <div class="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full shadow-2xl relative z-10 space-y-6 border border-slate-200/80 dark:border-slate-800">
       <div class="text-center space-y-2">
         <div class="w-14 h-14 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl mx-auto shadow-lg"><i class="fa-solid fa-utensils"></i></div>
         <h2 class="text-2xl font-extrabold text-slate-900 dark:text-white">RESTRO PRO</h2>
@@ -791,7 +794,7 @@ def index():
         <button id="auth-tab-reg" onclick="switchAuthTab('register')" class="flex-1 py-2 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition">สมัครสมาชิก</button>
       </div>
 
-      <!-- ฟอร์มเข้าสู่ระบบ (ระบุสีตัวหนังสือ text-slate-900 dark:text-white ชัดเจน) -->
+      <!-- ฟอร์มเข้าสู่ระบบ -->
       <div id="form-login" class="space-y-4">
         <div>
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อผู้ใช้งาน</label>
@@ -804,7 +807,7 @@ def index():
         <button onclick="handleLogin()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl text-sm shadow-md transition">เข้าสู่ระบบ</button>
       </div>
 
-      <!-- ฟอร์มสมัครสมาชิกลูกค้า (ระบุสีตัวหนังสือ text-slate-900 dark:text-white ชัดเจน) -->
+      <!-- ฟอร์มสมัครสมาชิกลูกค้า -->
       <div id="form-register" class="space-y-4 hidden">
         <div class="bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400 p-2.5 rounded-xl text-xs text-center font-medium">สมัครสมาชิกในฐานะ: ลูกค้าทั่วไป (Customer)</div>
         <div>
@@ -851,6 +854,7 @@ def index():
       <div class="space-y-3 pt-4 border-t border-slate-800">
         <div class="flex items-center justify-between text-xs px-1 text-slate-400">
           <span class="flex items-center gap-2 text-emerald-400 font-semibold"><span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> Live Real-time</span>
+          <!-- สลับ Dark/Light Mode ภายในแอป -->
           <button onclick="toggleDarkMode()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="สลับโหมด มืด/สว่าง">
             <i id="theme-icon" class="fa-solid fa-moon"></i>
           </button>
@@ -1244,7 +1248,7 @@ def index():
         error: 'fa-circle-xmark text-rose-400',
         info: 'fa-circle-info text-indigo-400'
       };
-      toast.className = `bg-slate-900/95 dark:bg-slate-800 text-white border border-slate-800 dark:border-slate-700 px-4 py-3 rounded-2xl text-xs font-semibold shadow-2xl flex items-center gap-2.5 transform transition-all duration-300 translate-y-2 opacity-0 pointer-events-auto`;
+      toast.className = `bg-slate-900 text-white border border-slate-800 px-4 py-3 rounded-2xl text-xs font-semibold shadow-2xl flex items-center gap-2.5 transform transition-all duration-300 translate-y-2 opacity-0 pointer-events-auto`;
       toast.innerHTML = `<i class="fa-solid ${icons[type] || icons.info} text-sm"></i> <span>${msg}</span>`;
       box.appendChild(toast);
       setTimeout(() => { toast.classList.remove('translate-y-2', 'opacity-0'); }, 10);
@@ -1893,7 +1897,7 @@ def index():
       }
     }
 
-    // KDS Logic
+    // KDS Logic: มีระบบ Debounce และ Lock Button ป้องกันกดรัว
     let kitchenDebounceTimer = null;
 
     async function loadKitchenOrders() {
