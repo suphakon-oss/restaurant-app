@@ -1,17 +1,14 @@
-"""
-core/database.py - ระบบจัดการฐานข้อมูล JSON และคลังเมนูอาหาร 50 รายการ พร้อมวัตถุดิบและสูตรตัดสต็อก
-"""
-
 import os
 import json
+import time
 import threading
-import tempfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from core.auth import hash_password
 
 IS_VERCEL = bool(os.environ.get("VERCEL"))
 DATA_PATH = "/tmp/restaurant_data.json" if IS_VERCEL else "restaurant_data.json"
+BACKUP_PATH = DATA_PATH + ".bak"
 
 _db_lock = threading.Lock()
 _DB_CACHE: Optional[Dict[str, Any]] = None
@@ -196,6 +193,7 @@ def get_initial_schema() -> Dict[str, Any]:
     ]
 
     return {
+        "schema_version": 3,
         "users": [
             {"id": "u1", "username": "admin", "password_hash": admin_h, "salt": admin_s, "role": "admin", "name": "ผู้ดูแลระบบ (Admin)"},
             {"id": "u2", "username": "staff", "password_hash": staff_h, "salt": staff_s, "role": "staff", "name": "พนักงานหน้าร้าน (Staff)"},
@@ -217,12 +215,13 @@ def get_initial_schema() -> Dict[str, Any]:
             {"phone": "0812345678", "name": "คุณสมชาย", "points": 150}
         ],
         "audit_logs": [
-            {"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "user": "System", "action": "SYSTEM_START", "details": "เริ่มต้นระบบสำเร็จ พร้อม 50 เมนูอาหารและ 115 วัตถุดิบ"}
+            {"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "user": "System", "action": "SYSTEM_START", "details": "เริ่มต้นระบบสำเร็จ พร้อม 50 เมนูอาหารและ 118 วัตถุดิบ"}
         ],
         "sales": []
     }
 
 def load_db() -> Dict[str, Any]:
+    """โหลดข้อมูลจากไฟล์อย่างปลอดภัย โดยไม่ล้างข้อมูลผู้ใช้หรือยอดขายทิ้งเด็ดขาด"""
     global _DB_CACHE
     with _db_lock:
         if not os.path.exists(DATA_PATH):
@@ -237,40 +236,60 @@ def load_db() -> Dict[str, Any]:
                 pass
             return data
 
-        try:
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # หากไฟล์เดิมมีน้อยกว่า 50 เมนู ให้อัปเดตเป็น 50 เมนูและคลังวัตถุดิบใหม่ทันที
-                if len(data.get("menu", [])) < 50:
-                    init_data = get_initial_schema()
-                    data["menu"] = init_data["menu"]
-                    data["inventory"] = init_data["inventory"]
-                    save_db(data)
-                _DB_CACHE = data
-                return data
-        except Exception:
-            if _DB_CACHE is not None:
-                return _DB_CACHE
-            return get_initial_schema()
+        # มีไฟล์อยู่แล้ว: พยายามอ่านไฟล์ซ้ำสูงสุด 5 ครั้งเพื่อป้องกันปัญหาการล็อกไฟล์ชั่วขณะ
+        for _ in range(5):
+            try:
+                with open(DATA_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    
+                    # อัปเกรดเฉพาะเมนูและวัตถุดิบครั้งแรก โดยห้ามแตะต้อง users, sales, audit_logs เดิมเด็ดขาด!
+                    if data.get("schema_version", 0) < 3 or not data.get("inventory"):
+                        init_data = get_initial_schema()
+                        data["menu"] = init_data["menu"]
+                        data["inventory"] = init_data["inventory"]
+                        data["schema_version"] = 3
+                        # บันทึกการอัปเกรด
+                        with open(DATA_PATH, "w", encoding="utf-8") as fw:
+                            json.dump(data, fw, ensure_ascii=False, indent=2)
+                    
+                    _DB_CACHE = data
+                    return data
+            except Exception:
+                time.sleep(0.05)
+
+        # หากอ่านไฟล์หลักไม่ได้ ให้ลองอ่านจากไฟล์สำรอง .bak
+        if os.path.exists(BACKUP_PATH):
+            try:
+                with open(BACKUP_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    _DB_CACHE = data
+                    return data
+            except Exception:
+                pass
+
+        if _DB_CACHE is not None:
+            return _DB_CACHE
+        return get_initial_schema()
 
 def save_db(data: Dict[str, Any]) -> bool:
+    """บันทึกไฟล์พร้อมทำสำเนา .bak อัตโนมัติ ป้องกันข้อมูลสูญหาย"""
     global _DB_CACHE
     with _db_lock:
         try:
             _DB_CACHE = data
-            dir_name = os.path.dirname(DATA_PATH) or "."
-            with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, encoding="utf-8") as tf:
-                json.dump(data, tf, ensure_ascii=False, indent=2)
-                temp_name = tf.name
-            os.replace(temp_name, DATA_PATH)
+            # สำเนาไฟล์เดิมไว้ก่อนเซฟเสมอ
+            if os.path.exists(DATA_PATH):
+                try:
+                    with open(DATA_PATH, "r", encoding="utf-8") as src, open(BACKUP_PATH, "w", encoding="utf-8") as dst:
+                        dst.write(src.read())
+                except Exception:
+                    pass
+
+            with open(DATA_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
             return True
         except Exception:
-            try:
-                with open(DATA_PATH, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                return True
-            except Exception:
-                return False
+            return False
 
 def add_audit_log(user: str, action: str, details: str):
     try:

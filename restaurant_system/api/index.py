@@ -22,19 +22,21 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     first_err = errors[0] if errors else {}
     field = str(first_err.get("loc", ["ข้อมูล"])[-1])
     err_type = first_err.get("type", "")
+
     if "int" in err_type or "float" in err_type:
-        msg = f"ช่อง '{field}' ต้องระบุเป็นตัวเลขเท่านั้น (ห้ามพิมพ์ตัวอักษร)"
+        msg = f"ช่อง '{field}' ต้องระบุเป็นตัวเลขเท่านั้น (ห้ามพิมพ์ตัวอักษรหรือเว้นว่าง)"
     elif "greater_than" in err_type:
         msg = f"ช่อง '{field}' ต้องมีค่ามากกว่า 0"
     else:
         msg = f"ข้อมูลในช่อง '{field}' ไม่ถูกต้องตามเกณฑ์"
+
     return JSONResponse(status_code=400, content={"success": False, "detail": msg})
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"success": False, "detail": "เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง"})
 
-# Real-Time Event Stream
+# Broadcast Queue สำหรับ Real-Time SSE
 event_subscribers: List[asyncio.Queue] = []
 
 async def broadcast_event(event_type: str, data: dict):
@@ -50,7 +52,7 @@ def require_role(token_str: Optional[str], allowed_roles: List[str]) -> Dict[str
         raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบก่อนทำรายการ")
     user_info = parse_token(token_str)
     if not user_info:
-        raise HTTPException(status_code=401, detail="Token ไม่ถูกต้องหรือหมดอายุ")
+        raise HTTPException(status_code=401, detail="Token ประจำตัวไม่ถูกต้องหรือหมดอายุ")
     if user_info["role"] not in allowed_roles:
         raise HTTPException(status_code=403, detail="คุณไม่มีสิทธิ์ทำรายการนี้")
     return user_info
@@ -127,7 +129,7 @@ class InventoryItemRequest(BaseModel):
     unit: str
     min_stock: float = Field(default=10, ge=0)
 
-# ================= 2. Authentication & Admin Tracker APIs =================
+# ================= 2. Authentication & Admin APIs =================
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
@@ -202,7 +204,12 @@ def get_admin_customers(x_auth_token: Optional[str] = Header(None)):
         l for l in logs 
         if l.get("action", "").startswith("CUSTOMER_") or l.get("action") in ("REGISTER", "CUSTOMER_REGISTER", "CUSTOMER_ORDER", "CUSTOMER_QUEUE", "CUSTOMER_RESERVE", "CUSTOMER_CHECKOUT")
     ]
-    return {"total_customers": len(customer_list), "customers": customer_list, "recent_activities": customer_activities[:30]}
+
+    return {
+        "total_customers": len(customer_list),
+        "customers": customer_list,
+        "recent_activities": customer_activities[:30]
+    }
 
 # ================= 3. Real-Time SSE =================
 
@@ -220,7 +227,7 @@ async def sse_notifications():
                 event_subscribers.remove(queue)
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-# ================= 4. เมนูอาหาร & CRUD =================
+# ================= 4. เมนูอาหาร: เพิ่ม / แก้ไข / ลบ / สลับสถานะ =================
 
 @app.get("/api/menu")
 def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: str = "asc", page: int = 1, limit: int = 50):
@@ -228,6 +235,7 @@ def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: 
     items = db.get("menu", [])
     if category:
         items = [m for m in items if m.get("category") == category]
+
     result = services.paginate_and_sort(items, search=search, search_field="name", sort_by=sort_by, order=order, page=page, limit=limit)
     result["categories"] = services.get_unique_categories(db.get("menu", []))
     return result
@@ -261,6 +269,7 @@ def create_menu(req: MenuCreateRequest, x_auth_token: Optional[str] = Header(Non
 
 @app.put("/api/menu/{menu_id}")
 def update_menu(menu_id: int, req: MenuCreateRequest, x_auth_token: Optional[str] = Header(None)):
+    """API สำหรับแก้ไขเมนูอาหารเดิม"""
     user = require_role(x_auth_token, ["admin", "staff"])
     name = req.name.strip()
     if not name:
@@ -289,6 +298,7 @@ def update_menu(menu_id: int, req: MenuCreateRequest, x_auth_token: Optional[str
 
 @app.delete("/api/menu/{menu_id}")
 def delete_menu(menu_id: int, x_auth_token: Optional[str] = Header(None)):
+    """API ลบเมนูอาหารแบบถาวร (ไม่มีการดึงกลับมา)"""
     user = require_role(x_auth_token, ["admin", "staff"])
     db = load_db()
     menu = next((m for m in db.get("menu", []) if m["id"] == menu_id), None)
@@ -327,6 +337,7 @@ def create_table(req: TableCreateRequest, x_auth_token: Optional[str] = Header(N
     db = load_db()
     tables = db.setdefault("tables", [])
     new_id = req.table_id if req.table_id else (max([t["table_id"] for t in tables], default=0) + 1)
+    
     if any(t["table_id"] == new_id for t in tables):
         raise HTTPException(status_code=400, detail=f"โต๊ะหมายเลข {new_id} มีอยู่แล้ว")
 
@@ -572,7 +583,7 @@ async def create_reservation(req: ReservationRequest):
     await broadcast_event("CUSTOMER_ACTIVITY", {"user": name, "action": "CUSTOMER_RESERVE", "desc": f"จองโต๊ะ {req.date} ({req.party_size} ท่าน)"})
     return {"success": True, "reservation": res_entry}
 
-# ================= 9. เช็คบิล / ใบเสร็จ =================
+# ================= 9. เช็คบิล / ใบเสร็จ & อัปเดตยอดสดเข้า Dashboard =================
 
 @app.post("/api/checkout")
 async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Header(None)):
@@ -617,6 +628,7 @@ async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Hea
     add_audit_log(user.get("role", "Cashier"), "CUSTOMER_CHECKOUT", f"เช็คบิลโต๊ะ {req.table_id} ยอดสุทธิ {net} ฿")
     save_db(db)
 
+    # ส่งสัญญาณ Real-time ให้ Dashboard รีเฟรชทันที
     await broadcast_event("DASHBOARD_UPDATE", {"revenue": net})
     await broadcast_event("CUSTOMER_ACTIVITY", {"user": f"โต๊ะ {req.table_id}", "action": "CUSTOMER_CHECKOUT", "desc": f"ชำระเงินเรียบร้อย ยอด {net} ฿"})
     return {"success": True, "receipt": receipt, "earned_points": earned_pts}
@@ -1432,7 +1444,6 @@ def index():
       if(name === 'qr') loadQrMenu();
     }
 
-    // Image Handlers
     function setImgMode(mode) {
       if(mode === 'url') {
         document.getElementById('box-img-url').classList.remove('hidden');
@@ -1536,9 +1547,7 @@ def index():
                 <div class="flex gap-2">
                   ${isStaffOrAdmin ? `
                     <button onclick="toggleMenu(${m.id})" class="flex-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs py-2 rounded-xl font-semibold transition">สลับสถานะ</button>
-                    <!-- ปุ่มแก้ไขเมนู -->
                     <button onclick="openEditMenuModal(${m.id})" class="text-slate-400 hover:text-indigo-600 px-2.5 py-2 rounded-xl text-xs hover:bg-indigo-50 dark:hover:bg-indigo-950 transition" title="แก้ไขเมนู"><i class="fa-solid fa-pen-to-square"></i></button>
-                    <!-- ปุ่มลบเมนู -->
                     <button onclick="deleteMenu(${m.id})" class="text-slate-400 hover:text-rose-500 px-2.5 py-2 rounded-xl text-xs hover:bg-rose-50 dark:hover:bg-rose-950 transition" title="ลบเมนู"><i class="fa-solid fa-trash-can"></i></button>
                   ` : `
                     <button onclick="quickOrderMenu(${m.id})" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs py-2 rounded-xl font-semibold transition shadow-sm">สั่งเมนูนี้</button>
@@ -2108,6 +2117,7 @@ def index():
       document.getElementById('bill-table-sel').innerHTML = tables.map(t => `<option value="${t.table_id}">โต๊ะ ${t.table_id} (${t.status})</option>`).join('');
     }
 
+    // ฟังก์ชันเช็คบิล: อัปเดตยอดสดเข้า Dashboard ทันที
     async function executeCheckout() {
       const tid = parseInt(document.getElementById('bill-table-sel').value);
       const disc = parseFloat(document.getElementById('bill-discount').value) || 0;
@@ -2159,7 +2169,7 @@ def index():
       showToast('เช็คบิลสำเร็จ! ยอดขายถูกบันทึกแล้ว', 'success');
       loadTables();
       loadCheckoutTables();
-      loadDashboard();
+      await loadDashboard(); // รีเฟรชยอดขายขึ้น Dashboard ทันที
     }
 
     async function sendCustomerOrder() {
