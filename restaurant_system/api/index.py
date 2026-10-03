@@ -22,21 +22,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     first_err = errors[0] if errors else {}
     field = str(first_err.get("loc", ["ข้อมูล"])[-1])
     err_type = first_err.get("type", "")
-
     if "int" in err_type or "float" in err_type:
-        msg = f"ช่อง '{field}' ต้องระบุเป็นตัวเลขเท่านั้น (ห้ามพิมพ์ตัวอักษรหรือเว้นว่าง)"
-    elif "greater_than" in err_type:
-        msg = f"ช่อง '{field}' ต้องมีค่ามากกว่า 0"
+        msg = f"ช่อง '{field}' ต้องระบุเป็นตัวเลขเท่านั้น"
     else:
         msg = f"ข้อมูลในช่อง '{field}' ไม่ถูกต้องตามเกณฑ์"
-
     return JSONResponse(status_code=400, content={"success": False, "detail": msg})
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"success": False, "detail": "เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง"})
 
-# Broadcast Queue สำหรับ Real-Time SSE
+# Real-Time Event Stream
 event_subscribers: List[asyncio.Queue] = []
 
 async def broadcast_event(event_type: str, data: dict):
@@ -52,7 +48,7 @@ def require_role(token_str: Optional[str], allowed_roles: List[str]) -> Dict[str
         raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบก่อนทำรายการ")
     user_info = parse_token(token_str)
     if not user_info:
-        raise HTTPException(status_code=401, detail="Token ประจำตัวไม่ถูกต้องหรือหมดอายุ")
+        raise HTTPException(status_code=401, detail="Token ไม่ถูกต้องหรือหมดอายุ")
     if user_info["role"] not in allowed_roles:
         raise HTTPException(status_code=403, detail="คุณไม่มีสิทธิ์ทำรายการนี้")
     return user_info
@@ -101,8 +97,8 @@ class CheckoutRequest(BaseModel):
     table_id: int = Field(..., gt=0)
     discount_percent: float = Field(default=0.0, ge=0.0, le=100.0)
     member_phone: Optional[str] = None
-    split_type: Optional[str] = "full"
-    split_count: int = Field(default=1, ge=1)
+    payment_method: str = Field(default="cash") # "cash" หรือ "transfer"
+    cash_received: Optional[float] = 0.0
 
 class MoveTableRequest(BaseModel):
     from_table: int = Field(..., gt=0)
@@ -129,17 +125,17 @@ class InventoryItemRequest(BaseModel):
     unit: str
     min_stock: float = Field(default=10, ge=0)
 
-# ================= 2. Authentication & Admin APIs =================
+# ================= 2. Authentication APIs (แก้ปัญหาตัวพิมพ์เล็กใหญ่ข้ามอุปกรณ์) =================
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
-    if not re.match(r"^[a-zA-Z0-9]+$", req.username):
-        raise HTTPException(status_code=400, detail="ชื่อผู้ใช้ต้องเป็นภาษาอังกฤษและตัวเลขเท่านั้น")
+    # ปรับเป็นตัวพิมพ์เล็กเสมอ ป้องกันมือถือพิมพ์ตัวใหญ่ตัวแรก
+    u_name = req.username.strip().lower()
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร")
 
     db = load_db()
-    user = next((u for u in db.get("users", []) if u["username"] == req.username), None)
+    user = next((u for u in db.get("users", []) if u["username"].lower() == u_name), None)
     if not user or not verify_password(req.password, user["password_hash"], user["salt"]):
         raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
 
@@ -154,21 +150,23 @@ async def login(req: LoginRequest):
 @app.post("/api/auth/register")
 async def register(req: RegisterRequest):
     name_clean = req.name.strip()
+    u_name = req.username.strip().lower() # บันทึกเป็นตัวพิมพ์เล็กเสมอ
+    
     if not name_clean:
         raise HTTPException(status_code=400, detail="ชื่อ-นามสกุลต้องไม่เป็นช่องว่าง")
-    if not re.match(r"^[a-zA-Z0-9]+$", req.username):
+    if not re.match(r"^[a-zA-Z0-9]+$", u_name):
         raise HTTPException(status_code=400, detail="ชื่อผู้ใช้ต้องเป็นภาษาอังกฤษและตัวเลขเท่านั้น")
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร")
 
     db = load_db()
-    if any(u["username"] == req.username for u in db.get("users", [])):
+    if any(u["username"].lower() == u_name for u in db.get("users", [])):
         raise HTTPException(status_code=400, detail="ชื่อผู้ใช้นี้มีอยู่ในระบบแล้ว")
 
     h, s = hash_password(req.password)
     new_user = {
         "id": f"u_{len(db.get('users', [])) + 1}",
-        "username": req.username,
+        "username": u_name,
         "password_hash": h,
         "salt": s,
         "role": "customer",
@@ -178,8 +176,8 @@ async def register(req: RegisterRequest):
     db.setdefault("users", []).append(new_user)
     save_db(db)
     
-    add_audit_log(name_clean, "CUSTOMER_REGISTER", f"ลูกค้าใหม่สมัครสมาชิก: @{req.username}")
-    await broadcast_event("CUSTOMER_ACTIVITY", {"user": name_clean, "action": "CUSTOMER_REGISTER", "desc": f"สมัครสมาชิกใหม่ (@{req.username})"})
+    add_audit_log(name_clean, "CUSTOMER_REGISTER", f"ลูกค้าใหม่สมัครสมาชิก: @{u_name}")
+    await broadcast_event("CUSTOMER_ACTIVITY", {"user": name_clean, "action": "CUSTOMER_REGISTER", "desc": f"สมัครสมาชิกใหม่ (@{u_name})"})
     return {"success": True, "message": "ลงทะเบียนสมาชิกลูกค้าสำเร็จ"}
 
 @app.get("/api/admin/customers")
@@ -204,12 +202,7 @@ def get_admin_customers(x_auth_token: Optional[str] = Header(None)):
         l for l in logs 
         if l.get("action", "").startswith("CUSTOMER_") or l.get("action") in ("REGISTER", "CUSTOMER_REGISTER", "CUSTOMER_ORDER", "CUSTOMER_QUEUE", "CUSTOMER_RESERVE", "CUSTOMER_CHECKOUT")
     ]
-
-    return {
-        "total_customers": len(customer_list),
-        "customers": customer_list,
-        "recent_activities": customer_activities[:30]
-    }
+    return {"total_customers": len(customer_list), "customers": customer_list, "recent_activities": customer_activities[:30]}
 
 # ================= 3. Real-Time SSE =================
 
@@ -227,7 +220,7 @@ async def sse_notifications():
                 event_subscribers.remove(queue)
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-# ================= 4. เมนูอาหาร: เพิ่ม / แก้ไข / ลบ / สลับสถานะ =================
+# ================= 4. เมนูอาหาร & CRUD (ส่งสัญญาณ Real-time ทุกคำสั่ง) =================
 
 @app.get("/api/menu")
 def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: str = "asc", page: int = 1, limit: int = 50):
@@ -235,21 +228,16 @@ def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: 
     items = db.get("menu", [])
     if category:
         items = [m for m in items if m.get("category") == category]
-
     result = services.paginate_and_sort(items, search=search, search_field="name", sort_by=sort_by, order=order, page=page, limit=limit)
     result["categories"] = services.get_unique_categories(db.get("menu", []))
     return result
 
 @app.post("/api/menu")
-def create_menu(req: MenuCreateRequest, x_auth_token: Optional[str] = Header(None)):
+async def create_menu(req: MenuCreateRequest, x_auth_token: Optional[str] = Header(None)):
     user = require_role(x_auth_token, ["admin", "staff"])
     name = req.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="ชื่อเมนูอาหารต้องไม่เป็นช่องว่าง")
-
-    image = req.image.strip() if req.image else ""
-    if image and not (image.startswith("http://") or image.startswith("https://") or image.startswith("data:image/")):
-        raise HTTPException(status_code=400, detail="รูปภาพต้องเป็นลิงก์ URL หรือไฟล์รูปภาพเท่านั้น")
 
     db = load_db()
     new_id = max([m["id"] for m in db.get("menu", [])], default=0) + 1
@@ -259,25 +247,23 @@ def create_menu(req: MenuCreateRequest, x_auth_token: Optional[str] = Header(Non
         "category": req.category.strip() or "อาหารจานเดียว",
         "price": req.price,
         "is_available": req.is_available,
-        "image": image,
+        "image": req.image.strip() if req.image else "",
         "recipe": [r.dict() for r in req.recipe]
     }
     db.setdefault("menu", []).append(new_menu)
     add_audit_log(user.get("role", "Staff"), "CREATE_MENU", f"เพิ่มเมนู: {name} ({req.price} ฿)")
     save_db(db)
+    
+    # ส่งสัญญาณ Real-time ให้ทุกหน้าจออัปเดตเมนูใหม่ทันที
+    await broadcast_event("MENU_UPDATE", {"action": "create", "menu": new_menu})
     return {"success": True, "menu": new_menu}
 
 @app.put("/api/menu/{menu_id}")
-def update_menu(menu_id: int, req: MenuCreateRequest, x_auth_token: Optional[str] = Header(None)):
-    """API สำหรับแก้ไขเมนูอาหารเดิม"""
+async def update_menu(menu_id: int, req: MenuCreateRequest, x_auth_token: Optional[str] = Header(None)):
     user = require_role(x_auth_token, ["admin", "staff"])
     name = req.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="ชื่อเมนูอาหารต้องไม่เป็นช่องว่าง")
-
-    image = req.image.strip() if req.image else ""
-    if image and not (image.startswith("http://") or image.startswith("https://") or image.startswith("data:image/")):
-        raise HTTPException(status_code=400, detail="รูปภาพต้องเป็นลิงก์ URL หรือไฟล์รูปภาพเท่านั้น")
 
     db = load_db()
     menu = next((m for m in db.get("menu", []) if m["id"] == menu_id), None)
@@ -288,17 +274,19 @@ def update_menu(menu_id: int, req: MenuCreateRequest, x_auth_token: Optional[str
     menu["category"] = req.category.strip() or "อาหารจานเดียว"
     menu["price"] = req.price
     menu["is_available"] = req.is_available
-    if image:
-        menu["image"] = image
+    if req.image:
+        menu["image"] = req.image.strip()
     menu["recipe"] = [r.dict() for r in req.recipe]
 
     add_audit_log(user.get("role", "Staff"), "EDIT_MENU", f"แก้ไขเมนู: {name} ({req.price} ฿)")
     save_db(db)
+    
+    # ส่งสัญญาณ Real-time ให้หน้าจอทุกคนเปลี่ยนข้อมูลทันที
+    await broadcast_event("MENU_UPDATE", {"action": "update", "menu": menu})
     return {"success": True, "menu": menu}
 
 @app.delete("/api/menu/{menu_id}")
-def delete_menu(menu_id: int, x_auth_token: Optional[str] = Header(None)):
-    """API ลบเมนูอาหารแบบถาวร (ไม่มีการดึงกลับมา)"""
+async def delete_menu(menu_id: int, x_auth_token: Optional[str] = Header(None)):
     user = require_role(x_auth_token, ["admin", "staff"])
     db = load_db()
     menu = next((m for m in db.get("menu", []) if m["id"] == menu_id), None)
@@ -308,10 +296,13 @@ def delete_menu(menu_id: int, x_auth_token: Optional[str] = Header(None)):
     db["menu"] = [m for m in db["menu"] if m["id"] != menu_id]
     add_audit_log(user.get("role", "Staff"), "DELETE_MENU", f"ลบเมนู: {menu['name']}")
     save_db(db)
+    
+    # ส่งสัญญาณ Real-time ให้เมนูหายไปจากหน้าจอของลูกค้าและสตาฟทุกคนทันที
+    await broadcast_event("MENU_UPDATE", {"action": "delete", "menu_id": menu_id})
     return {"success": True, "message": f"ลบเมนู '{menu['name']}' เรียบร้อย"}
 
 @app.post("/api/menu/{menu_id}/toggle")
-def toggle_menu_availability(menu_id: int, x_auth_token: Optional[str] = Header(None)):
+async def toggle_menu_availability(menu_id: int, x_auth_token: Optional[str] = Header(None)):
     user = require_role(x_auth_token, ["admin", "staff"])
     db = load_db()
     menu = next((m for m in db.get("menu", []) if m["id"] == menu_id), None)
@@ -322,6 +313,8 @@ def toggle_menu_availability(menu_id: int, x_auth_token: Optional[str] = Header(
     status_str = "พร้อมขาย" if menu["is_available"] else "หมด"
     add_audit_log(user.get("role", "Staff"), "TOGGLE_MENU", f"เปลี่ยนสถานะ '{menu['name']}' เป็น {status_str}")
     save_db(db)
+    
+    await broadcast_event("MENU_UPDATE", {"action": "toggle", "menu_id": menu_id, "is_available": menu["is_available"]})
     return {"success": True, "is_available": menu["is_available"]}
 
 # ================= 5. จัดการโต๊ะ =================
@@ -337,7 +330,6 @@ def create_table(req: TableCreateRequest, x_auth_token: Optional[str] = Header(N
     db = load_db()
     tables = db.setdefault("tables", [])
     new_id = req.table_id if req.table_id else (max([t["table_id"] for t in tables], default=0) + 1)
-    
     if any(t["table_id"] == new_id for t in tables):
         raise HTTPException(status_code=400, detail=f"โต๊ะหมายเลข {new_id} มีอยู่แล้ว")
 
@@ -583,7 +575,7 @@ async def create_reservation(req: ReservationRequest):
     await broadcast_event("CUSTOMER_ACTIVITY", {"user": name, "action": "CUSTOMER_RESERVE", "desc": f"จองโต๊ะ {req.date} ({req.party_size} ท่าน)"})
     return {"success": True, "reservation": res_entry}
 
-# ================= 9. เช็คบิล / ใบเสร็จ & อัปเดตยอดสดเข้า Dashboard =================
+# ================= 9. เช็คบิล: รองรับเงินสด (คำนวณเงินทอน) และโอนเงิน / QR =================
 
 @app.post("/api/checkout")
 async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Header(None)):
@@ -596,12 +588,13 @@ async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Hea
     subtotal, disc_amt, sc, vat, net = services.calculate_bill(orders, req.discount_percent)
     earned_pts = services.process_loyalty_points(req.member_phone, net) if req.member_phone else 0
 
-    split_info = None
-    if req.split_type == "split_even" and req.split_count > 1:
-        split_info = {
-            "split_count": req.split_count,
-            "amount_per_person": round(net / req.split_count, 2)
-        }
+    # คำนวณยอดเงินสดและเงินทอน
+    change = 0.0
+    if req.payment_method == "cash":
+        cash_in = max(0.0, float(req.cash_received or 0.0))
+        if cash_in < net:
+            raise HTTPException(status_code=400, detail=f"จำนวนเงินสดที่รับมา ({cash_in} ฿) น้อยกว่ายอดสุทธิ ({net} ฿)")
+        change = round(cash_in - net, 2)
 
     receipt = {
         "receipt_id": f"REC-{datetime.now().strftime('%Y%m%d%H%M%S')}",
@@ -613,7 +606,9 @@ async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Hea
         "service_charge": sc,
         "vat": vat,
         "net_total": net,
-        "split_info": split_info,
+        "payment_method": req.payment_method, # "cash" หรือ "transfer"
+        "cash_received": req.cash_received if req.payment_method == "cash" else None,
+        "change": change if req.payment_method == "cash" else None,
         "member_phone": req.member_phone,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -625,12 +620,13 @@ async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Hea
         if t["table_id"] == req.table_id:
             t["status"] = "ว่าง"
 
-    add_audit_log(user.get("role", "Cashier"), "CUSTOMER_CHECKOUT", f"เช็คบิลโต๊ะ {req.table_id} ยอดสุทธิ {net} ฿")
+    pay_desc = f"เงินสด รับ: {req.cash_received} ทอน: {change}" if req.payment_method == "cash" else "โอนเงินผ่าน QR สำเร็จ"
+    add_audit_log(user.get("role", "Cashier"), "CUSTOMER_CHECKOUT", f"เช็คบิลโต๊ะ {req.table_id} ยอด {net} ฿ ({pay_desc})")
     save_db(db)
 
     # ส่งสัญญาณ Real-time ให้ Dashboard รีเฟรชทันที
     await broadcast_event("DASHBOARD_UPDATE", {"revenue": net})
-    await broadcast_event("CUSTOMER_ACTIVITY", {"user": f"โต๊ะ {req.table_id}", "action": "CUSTOMER_CHECKOUT", "desc": f"ชำระเงินเรียบร้อย ยอด {net} ฿"})
+    await broadcast_event("CUSTOMER_ACTIVITY", {"user": f"โต๊ะ {req.table_id}", "action": "CUSTOMER_CHECKOUT", "desc": f"ชำระเงินเรียบร้อย ยอด {net} ฿ ({pay_desc})"})
     return {"success": True, "receipt": receipt, "earned_points": earned_pts}
 
 # ================= 10. Dashboard & Audit Logs =================
@@ -729,7 +725,7 @@ def index():
       <div class="space-y-4">
         <div>
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อเมนูอาหาร *</label>
-          <input type="text" id="new-menu-name" placeholder="เช่น ส้มตำไทย, ต้มยำกุ้ง" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
+          <input type="text" id="new-menu-name" placeholder="เช่น กะเพราหมูสับ, ต้มยำกุ้ง" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
@@ -784,7 +780,7 @@ def index():
       <div class="space-y-3">
         <div>
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อวัตถุดิบ *</label>
-          <input type="text" id="new-inv-name" placeholder="เช่น พริกจินดา, ปลาร้าต้มสุก, มะนาว" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
+          <input type="text" id="new-inv-name" placeholder="เช่น พริกจินดา, ปลาร้า, มะนาว" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
@@ -954,7 +950,7 @@ def index():
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200/70 dark:border-slate-800 shadow-sm">
-            <h3 class="font-bold text-sm text-slate-800 dark:text-slate-200 mb-4 flex items-center gap-2"><i class="fa-solid fa-trophy text-amber-400"></i> 5 อันดับเมนูขายดีประจำวัน</h3>
+            <h3 class="font-bold text-sm text-slate-800 dark:text-slate-200 mb-4 flex items-center gap-2"><i class="fa-solid fa-trophy text-amber-400"></i> 5 อันดับเมนูขายดี</h3>
             <div id="dash-top-sellers" class="space-y-2"></div>
           </div>
           <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200/70 dark:border-slate-800 shadow-sm">
@@ -969,7 +965,7 @@ def index():
         <div class="flex justify-between items-center">
           <div>
             <h2 class="text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">สถิติสมาชิก & พฤติกรรมลูกค้า (Live Tracker)</h2>
-            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">ดูว่ามีลูกค้าสมัครกี่คน ชื่ออะไร และกำลังกดทำรายการอะไรในเว็บแบบ Real-time</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">ดูรายชื่อลูกค้าและกิจกรรมในเว็บแบบ Real-time</p>
           </div>
           <button onclick="loadAdminCustomers()" class="bg-indigo-600 text-white text-xs px-3.5 py-1.5 rounded-xl font-semibold shadow-sm transition"><i class="fa-solid fa-rotate mr-1"></i> รีเฟรชข้อมูล</button>
         </div>
@@ -1088,7 +1084,7 @@ def index():
         </div>
       </section>
 
-      <!-- 5. Checkout -->
+      <!-- 5. Checkout: รองรับเงินสด (คำนวณเงินทอน) และโอนเงิน / สแกน QR -->
       <section id="pane-checkout" class="space-y-6 hidden">
         <h2 class="text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">คิดเงิน ออกใบเสร็จ & ระบบสะสมแต้ม</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -1108,17 +1104,41 @@ def index():
                 <input type="text" id="bill-member" placeholder="08XXXXXXXX" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
               </div>
             </div>
-            <div class="border-t border-slate-100 dark:border-slate-800 pt-3 space-y-2">
-              <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block">รูปแบบการจ่ายเงิน (Split Bill)</label>
-              <div class="flex gap-3">
-                <select id="bill-split-type" class="flex-1 border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
-                  <option value="full">จ่ายเต็มบิลคนเดียว</option>
-                  <option value="split_even">หารเท่ากัน (American Share)</option>
-                </select>
-                <input type="number" id="bill-split-count" value="2" min="1" class="w-24 border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-center font-bold" placeholder="กี่คน">
+
+            <!-- ตัวเลือกการชำระเงิน: เงินสด vs โอนเงิน -->
+            <div class="border-t border-slate-100 dark:border-slate-800 pt-3 space-y-3">
+              <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block">ช่องทางการชำระเงิน</label>
+              <div class="grid grid-cols-2 gap-2">
+                <button type="button" onclick="setPayMethod('cash')" id="btn-pay-cash" class="py-2.5 rounded-xl font-bold text-xs bg-indigo-600 text-white shadow-sm flex items-center justify-center gap-1.5 transition">
+                  <i class="fa-solid fa-money-bill-wave"></i> เงินสด
+                </button>
+                <button type="button" onclick="setPayMethod('transfer')" id="btn-pay-transfer" class="py-2.5 rounded-xl font-bold text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center gap-1.5 transition">
+                  <i class="fa-solid fa-qrcode"></i> โอนเงิน / QR Code
+                </button>
+              </div>
+
+              <!-- ถ้าเลือกเงินสด: มีช่องกรอกรับเงิน และเงินทอน -->
+              <div id="cash-input-box" class="space-y-2 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200/60 dark:border-slate-700">
+                <div class="flex justify-between items-center text-xs">
+                  <label class="font-semibold text-slate-700 dark:text-slate-300">รับเงินมา (บาท):</label>
+                  <input type="number" id="cash-received-input" oninput="calculateChange()" placeholder="0.00" class="w-32 border border-slate-300 dark:border-slate-600 rounded-xl px-2.5 py-1.5 text-right font-bold text-indigo-600 dark:text-indigo-400 bg-white dark:bg-slate-800 outline-none">
+                </div>
+                <div class="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-slate-700">
+                  <span class="text-slate-500 dark:text-slate-400">เงินทอน:</span>
+                  <span id="cash-change-display" class="font-extrabold text-emerald-600 dark:text-emerald-400 text-sm">0.00 ฿</span>
+                </div>
+              </div>
+
+              <!-- ถ้าเลือกโอนเงิน: แสดงสถานะสแกนจ่าย -->
+              <div id="transfer-input-box" class="hidden p-3 bg-indigo-50 dark:bg-indigo-950/60 rounded-2xl border border-indigo-100 dark:border-indigo-900 text-center text-xs text-indigo-700 dark:text-indigo-300">
+                <i class="fa-solid fa-mobile-screen-button text-base mb-1 block"></i>
+                ลูกค้าสแกน QR Code โอนเงินผ่าน Mobile Banking สำเร็จ
               </div>
             </div>
-            <button onclick="executeCheckout()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-2xl shadow-md transition"><i class="fa-solid fa-check-double mr-1.5"></i> เช็คบิลและพิมพ์ใบเสร็จ</button>
+
+            <button onclick="executeCheckout()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-2xl shadow-md transition mt-2">
+              <i class="fa-solid fa-check-double mr-1.5"></i> ชำระเงินและออกใบเสร็จ
+            </button>
           </div>
 
           <div id="printable-receipt" class="bg-white dark:bg-slate-900 p-6 rounded-3xl border-2 border-dashed border-slate-300 dark:border-slate-700 font-mono text-xs max-w-sm mx-auto shadow-sm">
@@ -1135,7 +1155,8 @@ def index():
               <div class="flex justify-between"><span>ค่าบริการ (10%):</span><span id="rc-sc">0.00 ฿</span></div>
               <div class="flex justify-between"><span>ภาษี (7%):</span><span id="rc-vat">0.00 ฿</span></div>
               <div class="flex justify-between font-extrabold text-sm text-slate-900 dark:text-white pt-2 border-t border-slate-200 dark:border-slate-700"><span>ยอดสุทธิ:</span><span id="rc-net">0.00 ฿</span></div>
-              <div id="rc-split-box" class="hidden text-indigo-600 font-bold mt-2 pt-1 border-t border-slate-100 dark:border-slate-800 text-center"></div>
+              
+              <div id="rc-payment-method-box" class="text-indigo-600 dark:text-indigo-400 font-bold mt-2 pt-1 border-t border-slate-100 dark:border-slate-800 text-center"></div>
               <div id="rc-point-box" class="text-emerald-600 text-center font-bold mt-1"></div>
             </div>
             <button onclick="window.print()" class="w-full mt-4 bg-slate-900 dark:bg-slate-800 text-white py-2.5 rounded-xl text-xs font-sans hover:bg-black font-semibold transition">🖨️ พิมพ์ใบเสร็จ</button>
@@ -1230,6 +1251,35 @@ def index():
     let cachedMenu = [];
     let cachedInventory = [];
     let uploadedImageBase64 = "";
+    let currentPaymentMethod = "cash";
+
+    function setPayMethod(method) {
+      currentPaymentMethod = method;
+      const btnCash = document.getElementById('btn-pay-cash');
+      const btnTransfer = document.getElementById('btn-pay-transfer');
+      const cashBox = document.getElementById('cash-input-box');
+      const transferBox = document.getElementById('transfer-input-box');
+
+      if (method === 'cash') {
+        btnCash.className = 'py-2.5 rounded-xl font-bold text-xs bg-indigo-600 text-white shadow-sm flex items-center justify-center gap-1.5 transition';
+        btnTransfer.className = 'py-2.5 rounded-xl font-bold text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center gap-1.5 transition';
+        cashBox.classList.remove('hidden');
+        transferBox.classList.add('hidden');
+      } else {
+        btnTransfer.className = 'py-2.5 rounded-xl font-bold text-xs bg-indigo-600 text-white shadow-sm flex items-center justify-center gap-1.5 transition';
+        btnCash.className = 'py-2.5 rounded-xl font-bold text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center gap-1.5 transition';
+        cashBox.classList.add('hidden');
+        transferBox.classList.remove('hidden');
+      }
+    }
+
+    function calculateChange() {
+      const cashIn = parseFloat(document.getElementById('cash-received-input').value) || 0;
+      const netText = document.getElementById('rc-net').innerText.replace(' ฿', '');
+      const net = parseFloat(netText) || 0;
+      const change = Math.max(0, cashIn - net);
+      document.getElementById('cash-change-display').innerText = change.toFixed(2) + ' ฿';
+    }
 
     function updateThemeIcons(isDark) {
       const iconClass = isDark ? 'fa-solid fa-sun text-amber-400' : 'fa-solid fa-moon text-slate-400';
@@ -1351,7 +1401,7 @@ def index():
         });
         const data = await res.json();
         if(res.ok) {
-          showToast('ลงทะเบียนลูกค้าสำเร็จ! กรุณาเข้าสู่ระบบด้วย Username/Password ที่สมัคร', 'success');
+          showToast('ลงทะเบียนลูกค้าสำเร็จ! กรุณาเข้าสู่ระบบด้วยชื่อที่สมัคร', 'success');
           switchAuthTab('login');
           document.getElementById('login-user').value = u;
           document.getElementById('login-pass').value = '';
@@ -1444,6 +1494,7 @@ def index():
       if(name === 'qr') loadQrMenu();
     }
 
+    // Image Handlers
     function setImgMode(mode) {
       if(mode === 'url') {
         document.getElementById('box-img-url').classList.remove('hidden');
@@ -1502,7 +1553,7 @@ def index():
       }
     }
 
-    // ================= Menu Logic (เพิ่ม & แก้ไขเมนู) =================
+    // ================= Menu Logic (เพิ่ม, แก้ไข, ลบ) =================
     async function loadCatalogMenus() {
       const search = document.getElementById('menu-search-input').value.trim();
       const cat = document.getElementById('menu-cat-filter').value;
@@ -1908,7 +1959,7 @@ def index():
       const res = await apiFetch(`/api/tables/${tid}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
-        showToast(data.message, 'success');
+        showToast(data.message || 'ลบโต๊ะสำเร็จ', 'success');
         loadTables();
         loadCheckoutTables();
         loadQrMenu();
@@ -1979,7 +2030,7 @@ def index():
       }
     }
 
-    // KDS Logic: มีระบบ Debounce และ Lock Button ป้องกันกดรัว
+    // KDS Logic
     let kitchenDebounceTimer = null;
 
     async function loadKitchenOrders() {
@@ -2117,26 +2168,27 @@ def index():
       document.getElementById('bill-table-sel').innerHTML = tables.map(t => `<option value="${t.table_id}">โต๊ะ ${t.table_id} (${t.status})</option>`).join('');
     }
 
-    // ฟังก์ชันเช็คบิล: อัปเดตยอดสดเข้า Dashboard ทันที
+    // ฟังก์ชันเช็คบิล: รองรับเงินสด (พร้อมคำนวณเงินทอน) และโอนเงินผ่าน QR
     async function executeCheckout() {
       const tid = parseInt(document.getElementById('bill-table-sel').value);
       const disc = parseFloat(document.getElementById('bill-discount').value) || 0;
       const phone = document.getElementById('bill-member').value.trim();
-      const sType = document.getElementById('bill-split-type').value;
-      const sCount = Math.max(1, parseInt(document.getElementById('bill-split-count').value) || 1);
+      const cashReceived = parseFloat(document.getElementById('cash-received-input').value) || 0;
 
       if(!tid) return showToast('กรุณาเลือกโต๊ะที่ต้องการเช็คบิล', 'error');
+
+      const payload = {
+        table_id: tid,
+        discount_percent: disc,
+        member_phone: phone,
+        payment_method: currentPaymentMethod,
+        cash_received: currentPaymentMethod === 'cash' ? cashReceived : 0
+      };
 
       const res = await apiFetch('/api/checkout', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          table_id: tid,
-          discount_percent: disc,
-          member_phone: phone,
-          split_type: sType,
-          split_count: sCount
-        })
+        body: JSON.stringify(payload)
       });
 
       const d = await res.json();
@@ -2155,11 +2207,11 @@ def index():
       document.getElementById('rc-vat').innerText = `+${r.vat.toFixed(2)} ฿`;
       document.getElementById('rc-net').innerText = r.net_total.toFixed(2) + ' ฿';
 
-      if(r.split_info) {
-        document.getElementById('rc-split-box').classList.remove('hidden');
-        document.getElementById('rc-split-box').innerText = `หาร ${r.split_info.split_count} คน = คนละ ${r.split_info.amount_per_person.toFixed(2)} ฿`;
+      const payBox = document.getElementById('rc-payment-method-box');
+      if (r.payment_method === 'cash') {
+        payBox.innerHTML = `ชำระด้วยเงินสด<br>รับเงิน: ${r.cash_received.toFixed(2)} ฿ | เงินทอน: ${r.change.toFixed(2)} ฿`;
       } else {
-        document.getElementById('rc-split-box').classList.add('hidden');
+        payBox.innerHTML = `ชำระด้วยการโอนเงิน / สแกน QR สำเร็จ`;
       }
 
       if(d.earned_points > 0) {
@@ -2169,7 +2221,7 @@ def index():
       showToast('เช็คบิลสำเร็จ! ยอดขายถูกบันทึกแล้ว', 'success');
       loadTables();
       loadCheckoutTables();
-      await loadDashboard(); // รีเฟรชยอดขายขึ้น Dashboard ทันที
+      await loadDashboard();
     }
 
     async function sendCustomerOrder() {
@@ -2255,7 +2307,7 @@ def index():
       }
     }
 
-    // Real-Time SSE Listener
+    // Real-Time SSE Listener (รับสัญญาณอัปเดตเมนูสดข้ามอุปกรณ์)
     const evt = new EventSource('/api/realtime');
     evt.onmessage = function(e) {
       const ev = JSON.parse(e.data);
@@ -2264,6 +2316,11 @@ def index():
           showToast(`🔔 โต๊ะ ${ev.data.table_id} มีออเดอร์ใหม่เข้ามา!`, 'info');
           loadKitchenOrders();
         }
+      } else if(ev.type === 'MENU_UPDATE') {
+        // เมื่อแอดมินลบ/เพิ่ม/แก้ไขเมนู ทุกหน้าจอจะอัปเดตตามทันที
+        loadCatalogMenus();
+        loadQrMenu();
+        if(currentTable) selectPOS(currentTable);
       } else if(ev.type === 'STOCK_UPDATE') {
         loadInventory();
         loadDashboard();
