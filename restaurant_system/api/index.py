@@ -775,7 +775,10 @@ def index():
   </div>
 
   <!-- Auth Screen: แก้ปัญหาสีตัวหนังสือให้มองเห็นชัดเจน 100% -->
-  <div id="auth-screen" class="min-h-screen flex items-center justify-center bg-slate-900 p-4 relative overflow-hidden">
+  <!-- ปุ่มสลับธีม มืด/สว่าง ที่หน้า Login (มุมขวาบน) -->
+    <button onclick="toggleDarkMode()" class="absolute top-5 right-5 z-20 p-3 rounded-2xl bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 shadow-md transition" title="สลับโหมด มืด/สว่าง">
+      <i id="auth-theme-icon" class="fa-solid fa-moon text-base"></i>
+    </button>
     <div class="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full shadow-2xl relative z-10 space-y-6 border border-slate-100 dark:border-slate-800">
       <div class="text-center space-y-2">
         <div class="w-14 h-14 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl mx-auto shadow-lg"><i class="fa-solid fa-utensils"></i></div>
@@ -1198,19 +1201,26 @@ def index():
     let cachedInventory = [];
     let uploadedImageBase64 = "";
 
+    function updateThemeIcons(isDark) {
+      const iconClass = isDark ? 'fa-solid fa-sun text-amber-400' : 'fa-solid fa-moon text-slate-400';
+      const i1 = document.getElementById('theme-icon');
+      const i2 = document.getElementById('auth-theme-icon');
+      if (i1) i1.className = iconClass;
+      if (i2) i2.className = iconClass;
+    }
+
     function toggleDarkMode() {
       const isDark = document.documentElement.classList.toggle('dark');
       localStorage.setItem('theme', isDark ? 'dark' : 'light');
-      document.getElementById('theme-icon').className = isDark ? 'fa-solid fa-sun text-amber-400' : 'fa-solid fa-moon';
+      updateThemeIcons(isDark);
     }
 
     if (localStorage.getItem('theme') === 'dark') {
       document.documentElement.classList.add('dark');
-      setTimeout(() => {
-        const icon = document.getElementById('theme-icon');
-        if (icon) icon.className = 'fa-solid fa-sun text-amber-400';
-      }, 100);
     }
+    window.addEventListener('DOMContentLoaded', () => {
+      updateThemeIcons(document.documentElement.classList.contains('dark'));
+    });
 
     async function apiFetch(url, options = {}) {
       options.headers = options.headers || {};
