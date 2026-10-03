@@ -349,7 +349,7 @@ def merge_table_route(req: MergeTableRequest, x_auth_token: Optional[str] = Head
         raise HTTPException(status_code=400, detail=msg)
     return {"success": True, "message": msg}
 
-# ================= 6. สั่งอาหาร & จอครัว (แก้ปัญหาคำสั่งชนกัน) =================
+# ================= 6. สั่งอาหาร & จอครัว =================
 
 @app.get("/api/orders")
 def get_orders(table_id: Optional[int] = None):
@@ -427,9 +427,8 @@ async def update_kitchen_order(order_id: int, status: str = Query(...), x_auth_t
     db = load_db()
     order = next((o for o in db.get("orders", []) if o["order_id"] == order_id), None)
     if not order:
-        raise HTTPException(status_code=404, detail="ไม่พบรายการออเดอร์ (อาจถูกปรับไปแล้ว)")
+        raise HTTPException(status_code=404, detail="ไม่พบรายการออเดอร์")
 
-    # ตัดสต็อกถ้ายังไม่เคยตัด
     if status in ("กำลังทำ", "เสิร์ฟแล้ว") and not order.get("stock_deducted", False):
         ok, msg = services.deduct_stock_in_db(db, order["menu_id"], order["qty"], user.get("role", "Kitchen"))
         if not ok:
@@ -439,7 +438,6 @@ async def update_kitchen_order(order_id: int, status: str = Query(...), x_auth_t
     order["status"] = status
     save_db(db)
     
-    # ส่งสัญญาณอัปเดตแบบเบาบาง ไม่ทำให้หน้าเว็บกระตุก
     await broadcast_event("ORDER_STATUS_UPDATE", {"order_id": order_id, "status": status})
     await broadcast_event("STOCK_UPDATE", {})
     return {"success": True, "status": status}
@@ -700,12 +698,12 @@ def index():
       <div class="space-y-4">
         <div>
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อเมนูอาหาร *</label>
-          <input type="text" id="new-menu-name" placeholder="เช่น ส้มตำไทย, ต้มยำกุ้ง" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 outline-none focus:border-indigo-500">
+          <input type="text" id="new-menu-name" placeholder="เช่น ส้มตำไทย, ต้มยำกุ้ง" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">หมวดหมู่</label>
-            <input type="text" id="new-menu-cat" value="อาหารจานเดียว" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 outline-none focus:border-indigo-500">
+            <input type="text" id="new-menu-cat" value="อาหารจานเดียว" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
           </div>
           <div>
             <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ราคา (บาท) *</label>
@@ -723,7 +721,7 @@ def index():
             <button type="button" onclick="setImgMode('upload')" id="btn-mode-upload" class="flex-1 py-1.5 rounded-lg font-semibold text-slate-600 dark:text-slate-300 transition">อัปโหลดไฟล์</button>
           </div>
           <div id="box-img-url">
-            <input type="url" id="new-menu-img-url" oninput="previewImage()" placeholder="https://..." class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs bg-white dark:bg-slate-800 outline-none">
+            <input type="url" id="new-menu-img-url" oninput="previewImage()" placeholder="https://..." class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
           </div>
           <div id="box-img-upload" class="hidden">
             <input type="file" id="new-menu-img-file" accept="image/png, image/jpeg, image/webp" onchange="handleFileUpload(event)" class="w-full text-xs text-slate-500">
@@ -755,66 +753,68 @@ def index():
       <div class="space-y-3">
         <div>
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อวัตถุดิบ *</label>
-          <input type="text" id="new-inv-name" placeholder="เช่น พริกจินดา, ปลาร้าต้มสุก, มะนาว" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 outline-none focus:border-indigo-500">
+          <input type="text" id="new-inv-name" placeholder="เช่น พริกจินดา, ปลาร้าต้มสุก, มะนาว" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">จำนวนตั้งต้น *</label>
-            <input type="number" id="new-inv-stock" step="0.1" min="0" placeholder="0" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 font-bold text-indigo-600 dark:text-indigo-400 outline-none">
+            <input type="number" id="new-inv-stock" step="0.1" min="0" placeholder="0" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold outline-none">
           </div>
           <div>
             <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">หน่วยนับ *</label>
-            <input type="text" id="new-inv-unit" placeholder="เช่น กรัม, ช้อน, ฟอง" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 outline-none">
+            <input type="text" id="new-inv-unit" placeholder="เช่น กรัม, ช้อน, ฟอง" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
           </div>
         </div>
         <div>
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">จุดเตือนสต็อกขั้นต่ำ</label>
-          <input type="number" id="new-inv-min" step="0.1" min="0" value="10" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 outline-none">
+          <input type="number" id="new-inv-min" step="0.1" min="0" value="10" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
         </div>
         <button onclick="submitNewInventory()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-2xl shadow-md transition mt-2">บันทึกวัตถุดิบเข้าสต็อก</button>
       </div>
     </div>
   </div>
 
-  <!-- Auth Screen -->
+  <!-- Auth Screen: แก้ปัญหาสีตัวหนังสือให้มองเห็นชัดเจน 100% -->
   <div id="auth-screen" class="min-h-screen flex items-center justify-center bg-slate-900 p-4 relative overflow-hidden">
-    <div class="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl relative z-10 space-y-6">
+    <div class="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-md w-full shadow-2xl relative z-10 space-y-6 border border-slate-100 dark:border-slate-800">
       <div class="text-center space-y-2">
         <div class="w-14 h-14 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl mx-auto shadow-lg"><i class="fa-solid fa-utensils"></i></div>
-        <h2 class="text-2xl font-extrabold text-slate-900">RESTRO PRO</h2>
-        <p class="text-xs text-slate-500">ระบบจัดการร้านอาหาร คลังสต็อก และ POS หน้าร้าน</p>
+        <h2 class="text-2xl font-extrabold text-slate-900 dark:text-white">RESTRO PRO</h2>
+        <p class="text-xs text-slate-500 dark:text-slate-400">ระบบจัดการร้านอาหาร คลังสต็อก และ POS หน้าร้าน</p>
       </div>
 
-      <div class="flex p-1 bg-slate-100 rounded-2xl text-xs font-semibold">
-        <button id="auth-tab-login" onclick="switchAuthTab('login')" class="flex-1 py-2 rounded-xl bg-white text-slate-900 shadow-sm transition">เข้าสู่ระบบ</button>
-        <button id="auth-tab-reg" onclick="switchAuthTab('register')" class="flex-1 py-2 rounded-xl text-slate-500 transition">สมัครสมาชิก</button>
+      <div class="flex p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl text-xs font-semibold">
+        <button id="auth-tab-login" onclick="switchAuthTab('login')" class="flex-1 py-2 rounded-xl bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm transition">เข้าสู่ระบบ</button>
+        <button id="auth-tab-reg" onclick="switchAuthTab('register')" class="flex-1 py-2 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition">สมัครสมาชิก</button>
       </div>
 
+      <!-- ฟอร์มเข้าสู่ระบบ (ระบุสีตัวหนังสือ text-slate-900 dark:text-white ชัดเจน) -->
       <div id="form-login" class="space-y-4">
         <div>
-          <label class="text-xs font-semibold text-slate-700 block mb-1">ชื่อผู้ใช้งาน</label>
-          <input type="text" id="login-user" placeholder="Username" class="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-indigo-500">
+          <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อผู้ใช้งาน</label>
+          <input type="text" id="login-user" placeholder="Username" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <div>
-          <label class="text-xs font-semibold text-slate-700 block mb-1">รหัสผ่าน</label>
-          <input type="password" id="login-pass" placeholder="••••••••" class="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-indigo-500">
+          <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">รหัสผ่าน</label>
+          <input type="password" id="login-pass" placeholder="••••••••" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <button onclick="handleLogin()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl text-sm shadow-md transition">เข้าสู่ระบบ</button>
       </div>
 
+      <!-- ฟอร์มสมัครสมาชิกลูกค้า (ระบุสีตัวหนังสือ text-slate-900 dark:text-white ชัดเจน) -->
       <div id="form-register" class="space-y-4 hidden">
-        <div class="bg-indigo-50 text-indigo-700 p-2.5 rounded-xl text-xs text-center font-medium">สมัครสมาชิกในฐานะ: ลูกค้าทั่วไป (Customer)</div>
+        <div class="bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400 p-2.5 rounded-xl text-xs text-center font-medium">สมัครสมาชิกในฐานะ: ลูกค้าทั่วไป (Customer)</div>
         <div>
-          <label class="text-xs font-semibold text-slate-700 block mb-1">ชื่อ-นามสกุล</label>
-          <input type="text" id="reg-name" placeholder="ชื่อจริงของคุณ" class="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none">
+          <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อ-นามสกุล</label>
+          <input type="text" id="reg-name" placeholder="ชื่อจริงของคุณ" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <div>
-          <label class="text-xs font-semibold text-slate-700 block mb-1">ชื่อผู้ใช้งาน</label>
-          <input type="text" id="reg-user" placeholder="Username (ภาษาอังกฤษและตัวเลข)" class="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none">
+          <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อผู้ใช้งาน</label>
+          <input type="text" id="reg-user" placeholder="Username (ภาษาอังกฤษและตัวเลข)" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <div>
-          <label class="text-xs font-semibold text-slate-700 block mb-1">รหัสผ่าน</label>
-          <input type="password" id="reg-pass" placeholder="อย่างน้อย 6 ตัวอักษร" class="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none">
+          <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">รหัสผ่าน</label>
+          <input type="password" id="reg-pass" placeholder="อย่างน้อย 6 ตัวอักษร" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <button onclick="handleRegister()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-xl text-sm shadow-md transition">ลงทะเบียนลูกค้า</button>
       </div>
@@ -871,7 +871,7 @@ def index():
         <div class="bg-white dark:bg-slate-900 p-3.5 rounded-2xl border border-slate-200/70 dark:border-slate-800 shadow-sm flex flex-col md:flex-row gap-3">
           <div class="flex-1 relative">
             <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3 text-slate-400 text-xs"></i>
-            <input type="text" id="menu-search-input" oninput="loadCatalogMenus()" placeholder="ค้นหาเมนูตามชื่อ..." class="w-full pl-9 pr-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none focus:border-indigo-500 transition">
+            <input type="text" id="menu-search-input" oninput="loadCatalogMenus()" placeholder="ค้นหาเมนูตามชื่อ..." class="w-full pl-9 pr-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500 transition">
           </div>
           <div class="w-full md:w-60">
             <select id="menu-cat-filter" onchange="loadCatalogMenus()" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl py-2 px-3 text-xs bg-white dark:bg-slate-800 outline-none font-semibold text-slate-700 dark:text-slate-200 focus:border-indigo-500"></select>
@@ -1017,11 +1017,11 @@ def index():
           <div class="space-y-3.5">
             <div>
               <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">หมายเลขโต๊ะของคุณ</label>
-              <select id="qr-table-num" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-sm bg-white dark:bg-slate-800 font-bold text-indigo-600 dark:text-indigo-400 outline-none"></select>
+              <select id="qr-table-num" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold outline-none"></select>
             </div>
             <div>
               <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">เลือกเมนูอาหาร</label>
-              <select id="qr-select-menu" onchange="updateQrMenuPreview()" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-sm bg-white dark:bg-slate-800 outline-none"></select>
+              <select id="qr-select-menu" onchange="updateQrMenuPreview()" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none"></select>
             </div>
             <div id="qr-dish-preview" class="border border-slate-100 dark:border-slate-800 rounded-2xl overflow-hidden bg-slate-50/70 dark:bg-slate-800/50 hidden shadow-sm">
               <img id="qr-dish-img" src="" alt="Menu" class="h-40 w-full object-cover">
@@ -1033,19 +1033,19 @@ def index():
             <div class="grid grid-cols-3 gap-2 pt-1">
               <div>
                 <label class="text-[11px] font-semibold text-slate-600 dark:text-slate-400">ความเผ็ด</label>
-                <select id="qr-opt-spice" class="w-full border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
+                <select id="qr-opt-spice" class="w-full border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
                   <option>ไม่เผ็ด</option><option selected>เผ็ดกลาง</option><option>เผ็ดมาก</option>
                 </select>
               </div>
               <div>
                 <label class="text-[11px] font-semibold text-slate-600 dark:text-slate-400">เพิ่มไข่ (+10฿)</label>
-                <select id="qr-opt-egg" class="w-full border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
+                <select id="qr-opt-egg" class="w-full border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
                   <option>ไม่ใส่</option><option>ไข่ดาว</option><option>ไข่เจียว</option>
                 </select>
               </div>
               <div>
                 <label class="text-[11px] font-semibold text-slate-600 dark:text-slate-400">ขนาด (+15฿)</label>
-                <select id="qr-opt-size" class="w-full border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
+                <select id="qr-opt-size" class="w-full border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
                   <option>ธรรมดา</option><option>พิเศษ</option>
                 </select>
               </div>
@@ -1063,26 +1063,26 @@ def index():
             <h3 class="font-bold text-base text-slate-800 dark:text-slate-200">คำนวณบิลชำระเงิน</h3>
             <div>
               <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">เลือกโต๊ะที่ต้องการชำระเงิน</label>
-              <select id="bill-table-sel" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-sm bg-white dark:bg-slate-800 font-bold outline-none"></select>
+              <select id="bill-table-sel" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold outline-none"></select>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <div>
                 <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ส่วนลดพิเศษ (%)</label>
-                <input type="number" id="bill-discount" value="0" min="0" max="100" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-sm bg-white dark:bg-slate-800 font-semibold outline-none">
+                <input type="number" id="bill-discount" value="0" min="0" max="100" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold outline-none">
               </div>
               <div>
                 <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">เบอร์สมาชิก (สะสมแต้ม)</label>
-                <input type="text" id="bill-member" placeholder="08XXXXXXXX" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-sm bg-white dark:bg-slate-800 outline-none">
+                <input type="text" id="bill-member" placeholder="08XXXXXXXX" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
               </div>
             </div>
             <div class="border-t border-slate-100 dark:border-slate-800 pt-3 space-y-2">
               <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block">รูปแบบการจ่ายเงิน (Split Bill)</label>
               <div class="flex gap-3">
-                <select id="bill-split-type" class="flex-1 border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
+                <select id="bill-split-type" class="flex-1 border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
                   <option value="full">จ่ายเต็มบิลคนเดียว</option>
                   <option value="split_even">หารเท่ากัน (American Share)</option>
                 </select>
-                <input type="number" id="bill-split-count" value="2" min="1" class="w-24 border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 text-center font-bold" placeholder="กี่คน">
+                <input type="number" id="bill-split-count" value="2" min="1" class="w-24 border border-slate-200 dark:border-slate-700 p-2 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-center font-bold" placeholder="กี่คน">
               </div>
             </div>
             <button onclick="executeCheckout()" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-2xl shadow-md transition"><i class="fa-solid fa-check-double mr-1.5"></i> เช็คบิลและพิมพ์ใบเสร็จ</button>
@@ -1146,8 +1146,8 @@ def index():
           <div class="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4">
             <h3 class="font-bold text-sm text-slate-800 dark:text-slate-200">ออกบัตรคิวหน้าร้าน</h3>
             <div class="space-y-3">
-              <input type="text" id="q-name" placeholder="ชื่อลูกค้า" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
-              <input type="number" id="q-size" placeholder="จำนวนคน" min="1" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
+              <input type="text" id="q-name" placeholder="ชื่อลูกค้า" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
+              <input type="number" id="q-size" placeholder="จำนวนคน" min="1" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
               <button onclick="createQueueTicket()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl text-xs font-semibold shadow-sm transition">ออกบัตรคิว</button>
             </div>
             <div class="mt-4">
@@ -1158,13 +1158,13 @@ def index():
           <div class="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4">
             <h3 class="font-bold text-sm text-slate-800 dark:text-slate-200">บันทึกการจองโต๊ะล่วงหน้า</h3>
             <div class="space-y-3">
-              <input type="text" id="res-name" placeholder="ชื่อผู้จอง" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
-              <input type="text" id="res-phone" placeholder="เบอร์โทรศัพท์" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
+              <input type="text" id="res-name" placeholder="ชื่อผู้จอง" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
+              <input type="text" id="res-phone" placeholder="เบอร์โทรศัพท์" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
               <div class="grid grid-cols-2 gap-2">
-                <input type="date" id="res-date" class="border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
-                <input type="time" id="res-time" class="border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
+                <input type="date" id="res-date" class="border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
+                <input type="time" id="res-time" class="border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
               </div>
-              <input type="number" id="res-size" placeholder="จำนวนที่นั่ง" min="1" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 outline-none">
+              <input type="number" id="res-size" placeholder="จำนวนที่นั่ง" min="1" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
               <button onclick="createReservation()" class="w-full bg-slate-900 dark:bg-slate-800 hover:bg-black text-white py-2.5 rounded-xl text-xs font-semibold shadow-sm transition">บันทึกการจอง</button>
             </div>
           </div>
@@ -1248,13 +1248,13 @@ def index():
       if(type === 'login') {
         document.getElementById('form-login').classList.remove('hidden');
         document.getElementById('form-register').classList.add('hidden');
-        document.getElementById('auth-tab-login').className = 'flex-1 py-2 rounded-xl bg-white text-slate-900 shadow-sm transition';
-        document.getElementById('auth-tab-reg').className = 'flex-1 py-2 rounded-xl text-slate-500 hover:text-slate-900 transition';
+        document.getElementById('auth-tab-login').className = 'flex-1 py-2 rounded-xl bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm transition';
+        document.getElementById('auth-tab-reg').className = 'flex-1 py-2 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition';
       } else {
         document.getElementById('form-login').classList.add('hidden');
         document.getElementById('form-register').classList.remove('hidden');
-        document.getElementById('auth-tab-reg').className = 'flex-1 py-2 rounded-xl bg-white text-slate-900 shadow-sm transition';
-        document.getElementById('auth-tab-login').className = 'flex-1 py-2 rounded-xl text-slate-500 hover:text-slate-900 transition';
+        document.getElementById('auth-tab-reg').className = 'flex-1 py-2 rounded-xl bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm transition';
+        document.getElementById('auth-tab-login').className = 'flex-1 py-2 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition';
       }
     }
 
@@ -1564,10 +1564,10 @@ def index():
       const row = document.createElement('div');
       row.className = 'flex gap-2 items-center';
       row.innerHTML = `
-        <select class="recipe-ing-sel flex-1 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-2 text-xs bg-white dark:bg-slate-800 outline-none">
+        <select class="recipe-ing-sel flex-1 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
           ${cachedInventory.map(i => `<option value="${i.id}">${i.name} (คงเหลือ: ${i.stock} ${i.unit})</option>`).join('')}
         </select>
-        <input type="number" step="0.1" min="0.1" placeholder="ปริมาณ" class="recipe-amt-input w-24 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-2 text-xs bg-white dark:bg-slate-800 outline-none font-bold">
+        <input type="number" step="0.1" min="0.1" placeholder="ปริมาณ" class="recipe-amt-input w-24 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none font-bold">
         <button onclick="this.parentElement.remove()" type="button" class="w-8 h-8 rounded-xl text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/50 flex items-center justify-center transition"><i class="fa-solid fa-xmark"></i></button>
       `;
       c.appendChild(row);
@@ -1883,12 +1883,10 @@ def index():
       }
     }
 
-    // ================= KDS Logic: มีระบบ Debounce และ Lock Button ป้องกันกดรัว =================
-    let isKitchenLoading = false;
+    // KDS Logic
     let kitchenDebounceTimer = null;
 
     async function loadKitchenOrders() {
-      // ใช้ Debounce ป้องกันการเรียกซ้ำซ้อนในเสี้ยววินาทีเดียวกัน
       if (kitchenDebounceTimer) clearTimeout(kitchenDebounceTimer);
       kitchenDebounceTimer = setTimeout(async () => {
         try {
@@ -1917,7 +1915,6 @@ def index():
     }
 
     async function kitchenAction(oid, st, btn) {
-      // ล็อกปุ่มทันทีเพื่อป้องกันการกดซ้ำรัวๆ
       if (btn) {
         btn.disabled = true;
         const originalText = btn.innerHTML;
