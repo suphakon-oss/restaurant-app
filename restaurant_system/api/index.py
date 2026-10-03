@@ -15,28 +15,26 @@ import core.services as services
 
 app = FastAPI(title="Smart Restaurant Pro Enterprise", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
-# Error Handlers ป้องกัน Traceback 500
+# Error Handlers
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = exc.errors()
     first_err = errors[0] if errors else {}
     field = str(first_err.get("loc", ["ข้อมูล"])[-1])
     err_type = first_err.get("type", "")
-
     if "int" in err_type or "float" in err_type:
-        msg = f"ช่อง '{field}' ต้องระบุเป็นตัวเลขเท่านั้น (ห้ามพิมพ์ตัวอักษรหรือเว้นว่าง)"
+        msg = f"ช่อง '{field}' ต้องระบุเป็นตัวเลขเท่านั้น (ห้ามพิมพ์ตัวอักษร)"
     elif "greater_than" in err_type:
         msg = f"ช่อง '{field}' ต้องมีค่ามากกว่า 0"
     else:
         msg = f"ข้อมูลในช่อง '{field}' ไม่ถูกต้องตามเกณฑ์"
-
     return JSONResponse(status_code=400, content={"success": False, "detail": msg})
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"success": False, "detail": "เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง"})
 
-# Broadcast Queue สำหรับ Real-Time SSE
+# Real-Time Event Stream
 event_subscribers: List[asyncio.Queue] = []
 
 async def broadcast_event(event_type: str, data: dict):
@@ -52,7 +50,7 @@ def require_role(token_str: Optional[str], allowed_roles: List[str]) -> Dict[str
         raise HTTPException(status_code=401, detail="กรุณาเข้าสู่ระบบก่อนทำรายการ")
     user_info = parse_token(token_str)
     if not user_info:
-        raise HTTPException(status_code=401, detail="Token ประจำตัวไม่ถูกต้องหรือหมดอายุ")
+        raise HTTPException(status_code=401, detail="Token ไม่ถูกต้องหรือหมดอายุ")
     if user_info["role"] not in allowed_roles:
         raise HTTPException(status_code=403, detail="คุณไม่มีสิทธิ์ทำรายการนี้")
     return user_info
@@ -129,7 +127,7 @@ class InventoryItemRequest(BaseModel):
     unit: str
     min_stock: float = Field(default=10, ge=0)
 
-# ================= 2. Authentication & Customer Tracker APIs =================
+# ================= 2. Authentication & Admin Tracker APIs =================
 
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
@@ -204,12 +202,7 @@ def get_admin_customers(x_auth_token: Optional[str] = Header(None)):
         l for l in logs 
         if l.get("action", "").startswith("CUSTOMER_") or l.get("action") in ("REGISTER", "CUSTOMER_REGISTER", "CUSTOMER_ORDER", "CUSTOMER_QUEUE", "CUSTOMER_RESERVE", "CUSTOMER_CHECKOUT")
     ]
-
-    return {
-        "total_customers": len(customer_list),
-        "customers": customer_list,
-        "recent_activities": customer_activities[:30]
-    }
+    return {"total_customers": len(customer_list), "customers": customer_list, "recent_activities": customer_activities[:30]}
 
 # ================= 3. Real-Time SSE =================
 
@@ -235,7 +228,6 @@ def get_menus(search: str = "", category: str = "", sort_by: str = "id", order: 
     items = db.get("menu", [])
     if category:
         items = [m for m in items if m.get("category") == category]
-
     result = services.paginate_and_sort(items, search=search, search_field="name", sort_by=sort_by, order=order, page=page, limit=limit)
     result["categories"] = services.get_unique_categories(db.get("menu", []))
     return result
@@ -266,6 +258,34 @@ def create_menu(req: MenuCreateRequest, x_auth_token: Optional[str] = Header(Non
     add_audit_log(user.get("role", "Staff"), "CREATE_MENU", f"เพิ่มเมนู: {name} ({req.price} ฿)")
     save_db(db)
     return {"success": True, "menu": new_menu}
+
+@app.put("/api/menu/{menu_id}")
+def update_menu(menu_id: int, req: MenuCreateRequest, x_auth_token: Optional[str] = Header(None)):
+    user = require_role(x_auth_token, ["admin", "staff"])
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="ชื่อเมนูอาหารต้องไม่เป็นช่องว่าง")
+
+    image = req.image.strip() if req.image else ""
+    if image and not (image.startswith("http://") or image.startswith("https://") or image.startswith("data:image/")):
+        raise HTTPException(status_code=400, detail="รูปภาพต้องเป็นลิงก์ URL หรือไฟล์รูปภาพเท่านั้น")
+
+    db = load_db()
+    menu = next((m for m in db.get("menu", []) if m["id"] == menu_id), None)
+    if not menu:
+        raise HTTPException(status_code=404, detail="ไม่พบเมนูอาหารที่ต้องการแก้ไข")
+
+    menu["name"] = name
+    menu["category"] = req.category.strip() or "อาหารจานเดียว"
+    menu["price"] = req.price
+    menu["is_available"] = req.is_available
+    if image:
+        menu["image"] = image
+    menu["recipe"] = [r.dict() for r in req.recipe]
+
+    add_audit_log(user.get("role", "Staff"), "EDIT_MENU", f"แก้ไขเมนู: {name} ({req.price} ฿)")
+    save_db(db)
+    return {"success": True, "menu": menu}
 
 @app.delete("/api/menu/{menu_id}")
 def delete_menu(menu_id: int, x_auth_token: Optional[str] = Header(None)):
@@ -307,7 +327,6 @@ def create_table(req: TableCreateRequest, x_auth_token: Optional[str] = Header(N
     db = load_db()
     tables = db.setdefault("tables", [])
     new_id = req.table_id if req.table_id else (max([t["table_id"] for t in tables], default=0) + 1)
-    
     if any(t["table_id"] == new_id for t in tables):
         raise HTTPException(status_code=400, detail=f"โต๊ะหมายเลข {new_id} มีอยู่แล้ว")
 
@@ -564,10 +583,7 @@ async def checkout_order(req: CheckoutRequest, x_auth_token: Optional[str] = Hea
         raise HTTPException(status_code=400, detail="ไม่มีรายการอาหารค้างชำระสำหรับโต๊ะนี้")
 
     subtotal, disc_amt, sc, vat, net = services.calculate_bill(orders, req.discount_percent)
-
-    earned_pts = 0
-    if req.member_phone:
-        earned_pts = services.process_loyalty_points(req.member_phone, net)
+    earned_pts = services.process_loyalty_points(req.member_phone, net) if req.member_phone else 0
 
     split_info = None
     if req.split_type == "split_even" and req.split_count > 1:
@@ -688,13 +704,16 @@ def index():
     </div>
   </div>
 
-  <!-- Modal: เพิ่มเมนูใหม่ -->
+  <!-- Modal: เพิ่ม / แก้ไขเมนูอาหาร -->
   <div id="add-menu-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
     <div class="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto custom-scroll border border-slate-100 dark:border-slate-800">
       <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
-        <h3 class="font-bold text-lg text-slate-900 dark:text-white flex items-center gap-2"><i class="fa-solid fa-utensils text-indigo-600"></i> เพิ่มรายการเมนูใหม่</h3>
+        <h3 id="menu-modal-heading" class="font-bold text-lg text-slate-900 dark:text-white flex items-center gap-2"><i class="fa-solid fa-utensils text-indigo-600"></i> เพิ่มรายการเมนูใหม่</h3>
         <button onclick="document.getElementById('add-menu-modal').classList.add('hidden')" class="w-8 h-8 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-slate-400"><i class="fa-solid fa-xmark"></i></button>
       </div>
+      
+      <input type="hidden" id="edit-menu-id" value="">
+
       <div class="space-y-4">
         <div>
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อเมนูอาหาร *</label>
@@ -738,7 +757,7 @@ def index():
           </div>
           <div id="recipe-rows-container" class="space-y-2 mt-2"></div>
         </div>
-        <button onclick="submitNewMenu()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-2xl shadow-md transition">บันทึกเมนูใหม่</button>
+        <button id="menu-submit-btn" onclick="submitMenuForm()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-2xl shadow-md transition">บันทึกเมนูใหม่</button>
       </div>
     </div>
   </div>
@@ -774,10 +793,8 @@ def index():
     </div>
   </div>
 
-  <!-- Auth Screen (มีปุ่มสลับโหมดมืด/สว่างที่มุมขวาบน และตัวหนังสือชัดเจน 100%) -->
+  <!-- Auth Screen -->
   <div id="auth-screen" class="min-h-screen flex items-center justify-center bg-slate-100 dark:bg-slate-900 p-4 relative overflow-hidden transition-colors duration-200">
-    
-    <!-- ปุ่มสลับธีม มืด/สว่าง หน้า Login (มุมขวาบน) -->
     <button onclick="toggleDarkMode()" class="absolute top-5 right-5 z-20 p-3 rounded-2xl bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 shadow-md transition" title="สลับโหมด มืด/สว่าง">
       <i id="auth-theme-icon" class="fa-solid fa-moon text-base"></i>
     </button>
@@ -794,7 +811,6 @@ def index():
         <button id="auth-tab-reg" onclick="switchAuthTab('register')" class="flex-1 py-2 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition">สมัครสมาชิก</button>
       </div>
 
-      <!-- ฟอร์มเข้าสู่ระบบ -->
       <div id="form-login" class="space-y-4">
         <div>
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อผู้ใช้งาน</label>
@@ -807,7 +823,6 @@ def index():
         <button onclick="handleLogin()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl text-sm shadow-md transition">เข้าสู่ระบบ</button>
       </div>
 
-      <!-- ฟอร์มสมัครสมาชิกลูกค้า -->
       <div id="form-register" class="space-y-4 hidden">
         <div class="bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400 p-2.5 rounded-xl text-xs text-center font-medium">สมัครสมาชิกในฐานะ: ลูกค้าทั่วไป (Customer)</div>
         <div>
@@ -854,7 +869,6 @@ def index():
       <div class="space-y-3 pt-4 border-t border-slate-800">
         <div class="flex items-center justify-between text-xs px-1 text-slate-400">
           <span class="flex items-center gap-2 text-emerald-400 font-semibold"><span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> Live Real-time</span>
-          <!-- สลับ Dark/Light Mode ภายในแอป -->
           <button onclick="toggleDarkMode()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="สลับโหมด มืด/สว่าง">
             <i id="theme-icon" class="fa-solid fa-moon"></i>
           </button>
@@ -1477,7 +1491,7 @@ def index():
       }
     }
 
-    // Menu Logic
+    // ================= Menu Logic (เพิ่ม & แก้ไขเมนู) =================
     async function loadCatalogMenus() {
       const search = document.getElementById('menu-search-input').value.trim();
       const cat = document.getElementById('menu-cat-filter').value;
@@ -1522,7 +1536,10 @@ def index():
                 <div class="flex gap-2">
                   ${isStaffOrAdmin ? `
                     <button onclick="toggleMenu(${m.id})" class="flex-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs py-2 rounded-xl font-semibold transition">สลับสถานะ</button>
-                    <button onclick="deleteMenu(${m.id})" class="text-slate-400 hover:text-rose-500 px-2.5 py-2 rounded-xl text-xs hover:bg-rose-50 dark:hover:bg-rose-950/50 transition" title="ลบเมนู"><i class="fa-solid fa-trash-can"></i></button>
+                    <!-- ปุ่มแก้ไขเมนู -->
+                    <button onclick="openEditMenuModal(${m.id})" class="text-slate-400 hover:text-indigo-600 px-2.5 py-2 rounded-xl text-xs hover:bg-indigo-50 dark:hover:bg-indigo-950 transition" title="แก้ไขเมนู"><i class="fa-solid fa-pen-to-square"></i></button>
+                    <!-- ปุ่มลบเมนู -->
+                    <button onclick="deleteMenu(${m.id})" class="text-slate-400 hover:text-rose-500 px-2.5 py-2 rounded-xl text-xs hover:bg-rose-50 dark:hover:bg-rose-950 transition" title="ลบเมนู"><i class="fa-solid fa-trash-can"></i></button>
                   ` : `
                     <button onclick="quickOrderMenu(${m.id})" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs py-2 rounded-xl font-semibold transition shadow-sm">สั่งเมนูนี้</button>
                   `}
@@ -1546,11 +1563,14 @@ def index():
     }
 
     async function deleteMenu(mid) {
-      if(!confirm('คุณแน่ใจหรือไม่ว่าต้องการลบเมนูนี้?')) return;
+      if(!confirm('คุณแน่ใจหรือไม่ว่าต้องการลบเมนูนี้ถาวร?')) return;
       const res = await apiFetch(`/api/menu/${mid}`, { method: 'DELETE' });
+      const data = await res.json();
       if(res.ok) {
-        showToast('ลบเมนูสำเร็จ', 'success');
+        showToast(data.message || 'ลบเมนูสำเร็จ', 'success');
         loadCatalogMenus();
+      } else {
+        showToast(data.detail || 'ไม่สามารถลบเมนูได้', 'error');
       }
     }
 
@@ -1563,31 +1583,81 @@ def index():
     async function openAddMenuModal() {
       const invRes = await apiFetch('/api/inventory');
       cachedInventory = await invRes.json();
-      document.getElementById('recipe-rows-container').innerHTML = '';
-      addRecipeRow();
-      uploadedImageBase64 = "";
-      document.getElementById('new-menu-img-url').value = "";
-      document.getElementById('new-menu-img-file').value = "";
+      
+      document.getElementById('edit-menu-id').value = '';
+      document.getElementById('menu-modal-heading').innerHTML = '<i class="fa-solid fa-utensils text-indigo-600"></i> เพิ่มรายการเมนูใหม่';
+      document.getElementById('menu-submit-btn').innerText = 'บันทึกเมนูใหม่';
+      
+      document.getElementById('new-menu-name').value = '';
+      document.getElementById('new-menu-cat').value = 'อาหารจานเดียว';
+      document.getElementById('new-menu-price').value = '';
+      document.getElementById('new-menu-img-url').value = '';
+      document.getElementById('new-menu-img-file').value = '';
+      uploadedImageBase64 = '';
       document.getElementById('menu-img-preview-box').classList.add('hidden');
       setImgMode('url');
+
+      document.getElementById('recipe-rows-container').innerHTML = '';
+      addRecipeRow();
       document.getElementById('add-menu-modal').classList.remove('hidden');
     }
 
-    function addRecipeRow() {
+    async function openEditMenuModal(mid) {
+      const invRes = await apiFetch('/api/inventory');
+      cachedInventory = await invRes.json();
+
+      const m = cachedMenu.find(x => x.id === mid);
+      if(!m) return showToast('ไม่พบข้อมูลเมนู', 'error');
+
+      document.getElementById('edit-menu-id').value = m.id;
+      document.getElementById('menu-modal-heading').innerHTML = `<i class="fa-solid fa-pen-to-square text-indigo-600"></i> แก้ไขเมนู: ${m.name}`;
+      document.getElementById('menu-submit-btn').innerText = 'บันทึกการแก้ไข';
+
+      document.getElementById('new-menu-name').value = m.name;
+      document.getElementById('new-menu-cat').value = m.category;
+      document.getElementById('new-menu-price').value = m.price;
+      
+      uploadedImageBase64 = '';
+      document.getElementById('new-menu-img-file').value = '';
+      setImgMode('url');
+      if (m.image) {
+        document.getElementById('new-menu-img-url').value = m.image;
+        document.getElementById('menu-img-preview').src = m.image;
+        document.getElementById('menu-img-preview-box').classList.remove('hidden');
+      } else {
+        document.getElementById('new-menu-img-url').value = '';
+        document.getElementById('menu-img-preview-box').classList.add('hidden');
+      }
+
+      const c = document.getElementById('recipe-rows-container');
+      c.innerHTML = '';
+      if (m.recipe && m.recipe.length > 0) {
+        m.recipe.forEach(r => {
+          addRecipeRow(r.ingredient_id, r.amount);
+        });
+      } else {
+        addRecipeRow();
+      }
+
+      document.getElementById('add-menu-modal').classList.remove('hidden');
+    }
+
+    function addRecipeRow(selectedIngId = '', selectedAmt = '') {
       const c = document.getElementById('recipe-rows-container');
       const row = document.createElement('div');
       row.className = 'flex gap-2 items-center';
       row.innerHTML = `
         <select class="recipe-ing-sel flex-1 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
-          ${cachedInventory.map(i => `<option value="${i.id}">${i.name} (คงเหลือ: ${i.stock} ${i.unit})</option>`).join('')}
+          ${cachedInventory.map(i => `<option value="${i.id}" ${i.id === selectedIngId ? 'selected' : ''}>${i.name} (คงเหลือ: ${i.stock} ${i.unit})</option>`).join('')}
         </select>
-        <input type="number" step="0.1" min="0.1" placeholder="ปริมาณ" class="recipe-amt-input w-24 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none font-bold">
+        <input type="number" step="0.1" min="0.1" value="${selectedAmt}" placeholder="ปริมาณ" class="recipe-amt-input w-24 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-2 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none font-bold">
         <button onclick="this.parentElement.remove()" type="button" class="w-8 h-8 rounded-xl text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/50 flex items-center justify-center transition"><i class="fa-solid fa-xmark"></i></button>
       `;
       c.appendChild(row);
     }
 
-    async function submitNewMenu() {
+    async function submitMenuForm() {
+      const editId = document.getElementById('edit-menu-id').value;
       const name = document.getElementById('new-menu-name').value.trim();
       const cat = document.getElementById('new-menu-cat').value.trim();
       const price = parseFloat(document.getElementById('new-menu-price').value);
@@ -1606,32 +1676,35 @@ def index():
         }
       });
 
-      const res = await apiFetch('/api/menu', {
-        method: 'POST',
+      const payload = {
+        name: name,
+        category: cat || 'อาหารจานเดียว',
+        price: price,
+        image: finalImage,
+        is_available: true,
+        recipe: recipe
+      };
+
+      const url = editId ? `/api/menu/${editId}` : '/api/menu';
+      const method = editId ? 'PUT' : 'POST';
+
+      const res = await apiFetch(url, {
+        method: method,
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          name: name,
-          category: cat || 'อาหารจานเดียว',
-          price: price,
-          image: finalImage,
-          is_available: true,
-          recipe: recipe
-        })
+        body: JSON.stringify(payload)
       });
 
       const d = await res.json();
       if(res.ok) {
-        showToast('เพิ่มเมนูอาหารเรียบร้อยแล้ว!', 'success');
+        showToast(editId ? 'แก้ไขข้อมูลเมนูเรียบร้อยแล้ว!' : 'เพิ่มเมนูอาหารเรียบร้อยแล้ว!', 'success');
         document.getElementById('add-menu-modal').classList.add('hidden');
-        document.getElementById('new-menu-name').value = '';
-        document.getElementById('new-menu-price').value = '';
         loadCatalogMenus();
       } else {
-        showToast(d.detail || 'ไม่สามารถเพิ่มเมนูได้', 'error');
+        showToast(d.detail || 'เกิดข้อผิดพลาดในการบันทึกเมนู', 'error');
       }
     }
 
-    // Inventory Logic
+    // ================= Inventory Logic =================
     function openAddInventoryModal() {
       document.getElementById('new-inv-name').value = '';
       document.getElementById('new-inv-stock').value = '';
@@ -1682,7 +1755,7 @@ def index():
             <td class="p-3.5"><span class="text-[10px] px-2.5 py-0.5 rounded-full font-bold ${isLow ? 'bg-rose-50 text-rose-600 border border-rose-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'}">${isLow ? 'ใกล้หมด' : 'ปกติ'}</span></td>
           </tr>
         `;
-      }).join('');
+      }).join('') || '<tr><td colspan="6" class="p-6 text-center text-slate-400">กำลังโหลดรายการวัตถุดิบ...</td></tr>';
     }
 
     async function openRestockPrompt() {
