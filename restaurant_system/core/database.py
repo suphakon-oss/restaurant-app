@@ -1,3 +1,6 @@
+"""
+core/database.py - ระบบจัดการฐานข้อมูล 10 เมนูหลัก พร้อมรูปภาพอาหารตรงปกจาก Wikimedia Commons
+"""
 
 import os
 import json
@@ -53,19 +56,20 @@ def get_initial_schema() -> Dict[str, Any]:
     ]
 
     menu = [
-        {"id": 1, "name": "กะเพราหมูสับ", "category": "ผัด / จานเดียว", "price": 65.0, "is_available": True, "image": "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_1", "amount": 100}, {"ingredient_id": "ing_10", "amount": 30}, {"ingredient_id": "ing_11", "amount": 20}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_24", "amount": 15}, {"ingredient_id": "ing_25", "amount": 15}]},
-        {"id": 2, "name": "ไก่กระเทียม", "category": "ผัด / จานเดียว", "price": 60.0, "is_available": True, "image": "https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_2", "amount": 100}, {"ingredient_id": "ing_11", "amount": 30}, {"ingredient_id": "ing_26", "amount": 10}, {"ingredient_id": "ing_24", "amount": 15}, {"ingredient_id": "ing_25", "amount": 15}]},
-        {"id": 3, "name": "คะน้าหมูกรอบ", "category": "ผัด / จานเดียว", "price": 75.0, "is_available": True, "image": "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_3", "amount": 80}, {"ingredient_id": "ing_13", "amount": 50}, {"ingredient_id": "ing_11", "amount": 20}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_24", "amount": 15}, {"ingredient_id": "ing_28", "amount": 20}]},
-        {"id": 4, "name": "ผัดผักบุ้งไฟแดง", "category": "ผัด / จานเดียว", "price": 60.0, "is_available": True, "image": "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_14", "amount": 80}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_11", "amount": 20}, {"ingredient_id": "ing_28", "amount": 20}, {"ingredient_id": "ing_24", "amount": 15}]},
-        {"id": 5, "name": "ข้าวผัดหมู / ไก่", "category": "ผัด / จานเดียว", "price": 60.0, "is_available": True, "image": "https://images.unsplash.com/photo-1603133872878-684f208fb84b?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_8", "amount": 1}, {"ingredient_id": "ing_4", "amount": 80}, {"ingredient_id": "ing_7", "amount": 1}, {"ingredient_id": "ing_15", "amount": 30}, {"ingredient_id": "ing_13", "amount": 30}, {"ingredient_id": "ing_27", "amount": 15}]},
-        {"id": 6, "name": "ผัดซีอิ๊วเส้นใหญ่หมู", "category": "ผัด / จานเดียว", "price": 65.0, "is_available": True, "image": "https://images.unsplash.com/photo-1559847844-5315695dadae?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_9", "amount": 150}, {"ingredient_id": "ing_4", "amount": 80}, {"ingredient_id": "ing_13", "amount": 40}, {"ingredient_id": "ing_7", "amount": 1}, {"ingredient_id": "ing_26", "amount": 15}, {"ingredient_id": "ing_27", "amount": 15}]},
-        {"id": 7, "name": "ต้มยำกุ้งน้ำข้น", "category": "แกง / ต้ม", "price": 180.0, "is_available": True, "image": "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_5", "amount": 4}, {"ingredient_id": "ing_19", "amount": 40}, {"ingredient_id": "ing_20", "amount": 40}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_21", "amount": 1}, {"ingredient_id": "ing_25", "amount": 20}]},
-        {"id": 8, "name": "แกงเขียวหวานไก่", "category": "แกง / ต้ม", "price": 110.0, "is_available": True, "image": "https://images.unsplash.com/photo-1455619452474-d2be8b1e70cd?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_2", "amount": 100}, {"ingredient_id": "ing_18", "amount": 40}, {"ingredient_id": "ing_23", "amount": 25}, {"ingredient_id": "ing_22", "amount": 50}, {"ingredient_id": "ing_25", "amount": 15}]},
-        {"id": 9, "name": "ปลากะพงทอดน้ำปลา", "category": "ทอด / ย่าง / อบ", "price": 320.0, "is_available": True, "image": "https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_6", "amount": 1}, {"ingredient_id": "ing_25", "amount": 30}, {"ingredient_id": "ing_29", "amount": 20}]},
-        {"id": 10, "name": "ส้มตำไทย", "category": "ยำ / ตำ / ลาบ", "price": 60.0, "is_available": True, "image": "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600&auto=format&fit=crop&q=80", "recipe": [{"ingredient_id": "ing_16", "amount": 100}, {"ingredient_id": "ing_15", "amount": 30}, {"ingredient_id": "ing_17", "amount": 30}, {"ingredient_id": "ing_30", "amount": 20}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_21", "amount": 1}, {"ingredient_id": "ing_25", "amount": 15}]}
+        {"id": 1, "name": "กะเพราหมูสับ", "category": "ผัด / จานเดียว", "price": 65.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/69/2017_0426_Mu_krop_phat_kaphrao_khai_dao_rat_khao_in_Ayutthaya.jpg/640px-2017_0426_Mu_krop_phat_kaphrao_khai_dao_rat_khao_in_Ayutthaya.jpg", "recipe": [{"ingredient_id": "ing_1", "amount": 100}, {"ingredient_id": "ing_10", "amount": 30}, {"ingredient_id": "ing_11", "amount": 20}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_24", "amount": 15}, {"ingredient_id": "ing_25", "amount": 15}]},
+        {"id": 2, "name": "ไก่กระเทียม", "category": "ผัด / จานเดียว", "price": 60.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/24/Kai_thot_takhrai.jpg/640px-Kai_thot_takhrai.jpg", "recipe": [{"ingredient_id": "ing_2", "amount": 100}, {"ingredient_id": "ing_11", "amount": 30}, {"ingredient_id": "ing_26", "amount": 10}, {"ingredient_id": "ing_24", "amount": 15}, {"ingredient_id": "ing_25", "amount": 15}]},
+        {"id": 3, "name": "คะน้าหมูกรอบ", "category": "ผัด / จานเดียว", "price": 75.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/Phat_khana_mu_krop.jpg/640px-Phat_khana_mu_krop.jpg", "recipe": [{"ingredient_id": "ing_3", "amount": 80}, {"ingredient_id": "ing_13", "amount": 50}, {"ingredient_id": "ing_11", "amount": 20}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_24", "amount": 15}, {"ingredient_id": "ing_28", "amount": 20}]},
+        {"id": 4, "name": "ผัดผักบุ้งไฟแดง", "category": "ผัด / จานเดียว", "price": 60.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/19/Pak_boong_fai_daeng.jpg/640px-Pak_boong_fai_daeng.jpg", "recipe": [{"ingredient_id": "ing_14", "amount": 80}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_11", "amount": 20}, {"ingredient_id": "ing_28", "amount": 20}, {"ingredient_id": "ing_24", "amount": 15}]},
+        {"id": 5, "name": "ข้าวผัดหมู / ไก่", "category": "ผัด / จานเดียว", "price": 60.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/72/Khao_Phat_Kung.jpg/640px-Khao_Phat_Kung.jpg", "recipe": [{"ingredient_id": "ing_8", "amount": 1}, {"ingredient_id": "ing_4", "amount": 80}, {"ingredient_id": "ing_7", "amount": 1}, {"ingredient_id": "ing_15", "amount": 30}, {"ingredient_id": "ing_13", "amount": 30}, {"ingredient_id": "ing_27", "amount": 15}]},
+        {"id": 6, "name": "ผัดซีอิ๊วเส้นใหญ่หมู", "category": "ผัด / จานเดียว", "price": 65.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/34/Sriwan_KuayTiow.JPG/640px-Sriwan_KuayTiow.JPG", "recipe": [{"ingredient_id": "ing_9", "amount": 150}, {"ingredient_id": "ing_4", "amount": 80}, {"ingredient_id": "ing_13", "amount": 40}, {"ingredient_id": "ing_7", "amount": 1}, {"ingredient_id": "ing_26", "amount": 15}, {"ingredient_id": "ing_27", "amount": 15}]},
+        {"id": 7, "name": "ต้มยำกุ้งน้ำข้น", "category": "แกง / ต้ม", "price": 180.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e8/Tom_yam_kung_maenam.jpg/640px-Tom_yam_kung_maenam.jpg", "recipe": [{"ingredient_id": "ing_5", "amount": 4}, {"ingredient_id": "ing_19", "amount": 40}, {"ingredient_id": "ing_20", "amount": 40}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_21", "amount": 1}, {"ingredient_id": "ing_25", "amount": 20}]},
+        {"id": 8, "name": "แกงเขียวหวานไก่", "category": "แกง / ต้ม", "price": 110.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Thai_green_chicken_curry_and_roti.jpg/640px-Thai_green_chicken_curry_and_roti.jpg", "recipe": [{"ingredient_id": "ing_2", "amount": 100}, {"ingredient_id": "ing_18", "amount": 40}, {"ingredient_id": "ing_23", "amount": 25}, {"ingredient_id": "ing_22", "amount": 50}, {"ingredient_id": "ing_25", "amount": 15}]},
+        {"id": 9, "name": "ปลากะพงทอดน้ำปลา", "category": "ทอด / ย่าง / อบ", "price": 320.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Pla_nin_thot.jpg/640px-Pla_nin_thot.jpg", "recipe": [{"ingredient_id": "ing_6", "amount": 1}, {"ingredient_id": "ing_25", "amount": 30}, {"ingredient_id": "ing_29", "amount": 20}]},
+        {"id": 10, "name": "ส้มตำไทย", "category": "ยำ / ตำ / ลาบ", "price": 60.0, "is_available": True, "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a3/Somtam_kaiyang_khaoniaow.jpg/640px-Somtam_kaiyang_khaoniaow.jpg", "recipe": [{"ingredient_id": "ing_16", "amount": 100}, {"ingredient_id": "ing_15", "amount": 30}, {"ingredient_id": "ing_17", "amount": 30}, {"ingredient_id": "ing_30", "amount": 20}, {"ingredient_id": "ing_12", "amount": 20}, {"ingredient_id": "ing_21", "amount": 1}, {"ingredient_id": "ing_25", "amount": 15}]}
     ]
 
     return {
+        "schema_version": 5,
         "users": [
             {"id": "u1", "username": "admin", "password_hash": admin_h, "salt": admin_s, "role": "admin", "name": "ผู้ดูแลระบบ (Admin)"},
             {"id": "u2", "username": "staff", "password_hash": staff_h, "salt": staff_s, "role": "staff", "name": "พนักงานหน้าร้าน (Staff)"},
@@ -107,6 +111,16 @@ def load_db() -> Dict[str, Any]:
             try:
                 with open(DATA_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                    
+                    # อัปเกรดรูปภาพเมนูให้ตรงปกทันที โดยไม่แตะต้อง users, sales, หรือ logs เดิม
+                    if data.get("schema_version", 0) < 5:
+                        init_data = get_initial_schema()
+                        data["menu"] = init_data["menu"]
+                        data["inventory"] = init_data["inventory"]
+                        data["schema_version"] = 5
+                        with open(DATA_PATH, "w", encoding="utf-8") as fw:
+                            json.dump(data, fw, ensure_ascii=False, indent=2)
+
                     _DB_CACHE = data
                     return data
             except Exception:
