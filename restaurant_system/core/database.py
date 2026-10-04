@@ -1,3 +1,4 @@
+
 import os
 import json
 import time
@@ -47,7 +48,7 @@ def get_initial_schema() -> Dict[str, Any]:
         {"id": "ing_26", "name": "ซีอิ๊วดำ", "stock": 5000, "unit": "มล.", "min_stock": 500},
         {"id": "ing_27", "name": "ซีอิ๊วขาว", "stock": 5000, "unit": "มล.", "min_stock": 500},
         {"id": "ing_28", "name": "เต้าเจี้ยว", "stock": 3000, "unit": "กรัม", "min_stock": 300},
-        {"id": "ing_29", "name": "น้ำตาลทราย/ปี๊บ", "stock": 5000, "unit": "กรัม", "min_stock": 500},
+        {"id": "ing_29", "name": "น้ำตาลทราย", "stock": 5000, "unit": "กรัม", "min_stock": 500},
         {"id": "ing_30", "name": "ถั่วลิสงและกุ้งแห้ง", "stock": 3000, "unit": "กรัม", "min_stock": 300}
     ]
 
@@ -65,7 +66,6 @@ def get_initial_schema() -> Dict[str, Any]:
     ]
 
     return {
-        "schema_version": 4,
         "users": [
             {"id": "u1", "username": "admin", "password_hash": admin_h, "salt": admin_s, "role": "admin", "name": "ผู้ดูแลระบบ (Admin)"},
             {"id": "u2", "username": "staff", "password_hash": staff_h, "salt": staff_s, "role": "staff", "name": "พนักงานหน้าร้าน (Staff)"},
@@ -107,16 +107,6 @@ def load_db() -> Dict[str, Any]:
             try:
                 with open(DATA_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    
-                    # อัปเกรดเป็น 10 เมนูหลักครั้งเดียว โดยไม่ลบ users, sales, logs ที่มีอยู่เดิม
-                    if data.get("schema_version", 0) < 4:
-                        init_data = get_initial_schema()
-                        data["menu"] = init_data["menu"]
-                        data["inventory"] = init_data["inventory"]
-                        data["schema_version"] = 4
-                        with open(DATA_PATH, "w", encoding="utf-8") as fw:
-                            json.dump(data, fw, ensure_ascii=False, indent=2)
-
                     _DB_CACHE = data
                     return data
             except Exception:
