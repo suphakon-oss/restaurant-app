@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="th" class="h-full">
 <head>
@@ -50,7 +51,7 @@
       <div class="space-y-4">
         <div>
           <label class="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1">ชื่อเมนูอาหาร *</label>
-          <input type="text" id="new-menu-name" placeholder="เช่น กะเพราหมูสับ, ต้มยำกุ้ง" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
+          <input type="text" id="new-menu-name" placeholder="เช่น ส้มตำไทย, ต้มยำกุ้ง" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-indigo-500">
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
@@ -196,7 +197,6 @@
           <button onclick="switchTab('inventory')" id="nav-inventory" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-boxes-stacked w-5 text-purple-400"></i> สต็อกวัตถุดิบ</button>
           <button onclick="switchTab('queue')" id="nav-queue" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-users-line w-5 text-teal-400"></i> คิว & จองโต๊ะ</button>
           <button onclick="switchTab('logs')" id="nav-logs" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-clock-rotate-left w-5 text-slate-400"></i> Audit Logs</button>
-          <!-- เมนูสั่งอาหารสำหรับลูกค้า -->
           <button onclick="switchTab('qr')" id="nav-qr" class="w-full text-left py-2.5 px-3 rounded-xl hover:bg-slate-800 flex items-center gap-3 transition"><i class="fa-solid fa-mobile-screen w-5 text-sky-400"></i> สั่งอาหารประจำโต๊ะ</button>
         </nav>
       </div>
@@ -362,9 +362,9 @@
         <div id="kds-grid" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
       </section>
 
-      <!-- 4. QR Customer: ระบบสั่งอาหารประจำโต๊ะ (ต้องได้คิวและโต๊ะก่อนจึงจะสั่งได้) -->
+      <!-- 4. QR Customer: หน้าสั่งอาหารประจำโต๊ะ (ต้องได้คิวและโต๊ะก่อนจึงจะสั่งได้) -->
       <section id="pane-qr" class="space-y-6 hidden">
-        <!-- สถานะที่ 1 & 2: หน้าจอรอบัตรคิว / รอพนักงานเรียกคิวและจัดโต๊ะ -->
+        <!-- รอดำเนินการเรื่องคิวและจัดโต๊ะ -->
         <div id="customer-queue-gate-screen" class="max-w-md mx-auto bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-xl text-center space-y-5">
           <div class="w-16 h-16 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 rounded-3xl flex items-center justify-center text-3xl mx-auto shadow-sm">
             <i class="fa-solid fa-ticket"></i>
@@ -376,7 +376,7 @@
             <div class="space-y-3 pt-3">
               <input type="text" id="gate-cust-name" placeholder="ชื่อของคุณ" class="w-full border border-slate-200 dark:border-slate-700 rounded-2xl p-3 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
               <input type="number" id="gate-party-size" value="2" min="1" placeholder="จำนวนที่นั่ง" class="w-full border border-slate-200 dark:border-slate-700 rounded-2xl p-3 text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none font-bold">
-              <button onclick="customerGetTicketAtGate()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-2xl shadow-lg transition">กดรับบัตรคิวเดี๋ยวนี้</button>
+              <button id="btn-gate-get-ticket" onclick="customerGetTicketAtGate()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-2xl shadow-lg transition">กดรับบัตรคิวเดี๋ยวนี้</button>
             </div>
           </div>
 
@@ -395,7 +395,7 @@
           </div>
         </div>
 
-        <!-- สถานะที่ 3: แอดมินเรียกคิวและจัดโต๊ะให้แล้ว -> ปลดล็อกหน้าสั่งอาหารประจำโต๊ะ -->
+        <!-- หน้าสั่งอาหารประจำโต๊ะ (ปลดล็อกเมื่อแอดมินจัดโต๊ะให้แล้ว) -->
         <div id="customer-order-active-screen" class="hidden max-w-4xl mx-auto space-y-6">
           <div class="bg-white dark:bg-slate-900 p-4 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm flex justify-between items-center">
             <div class="flex items-center gap-3">
@@ -411,14 +411,13 @@
           </div>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <!-- เมนูอาหารและตัวเลือก -->
             <div class="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4">
               <h3 class="font-bold text-base text-slate-900 dark:text-white">เลือกเมนูอาหาร</h3>
               <div>
                 <select id="qr-select-menu" onchange="updateQrMenuPreview()" class="w-full border border-slate-200 dark:border-slate-700 rounded-xl p-2.5 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none"></select>
               </div>
               <div id="qr-dish-preview" class="border border-slate-100 dark:border-slate-800 rounded-2xl overflow-hidden bg-slate-50/70 dark:bg-slate-800/50 hidden shadow-sm">
-                <img id="qr-dish-img" src="" alt="Menu" class="h-36 w-full object-cover">
+                <img id="qr-dish-img" src="" alt="Menu" class="h-36 w-full object-cover" onerror="this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500&auto=format&fit=crop&q=80';">
                 <div class="p-2.5 flex justify-between items-center text-xs">
                   <span id="qr-dish-name" class="font-bold text-slate-900 dark:text-white"></span>
                   <span id="qr-dish-price" class="font-extrabold text-indigo-600 dark:text-indigo-400"></span>
@@ -575,7 +574,7 @@
         </div>
       </section>
 
-      <!-- 7. Queue: แอดมินเรียกคิวพร้อมจัดโต๊ะให้ลูกค้า -->
+      <!-- 7. Queue: มีระบบป้องกันการกดขอคิวซ้ำซ้อน -->
       <section id="pane-queue" class="space-y-6 hidden">
         <h2 class="text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">บัตรคิวหน้าร้าน & จองโต๊ะล่วงหน้า</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -584,7 +583,7 @@
             <div class="space-y-3">
               <input type="text" id="q-name" placeholder="ชื่อลูกค้า" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
               <input type="number" id="q-size" placeholder="จำนวนคน" min="1" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
-              <button onclick="createQueueTicket()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl text-xs font-semibold shadow-sm transition">ออกบัตรคิว</button>
+              <button id="btn-issue-queue" onclick="createQueueTicket()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl text-xs font-semibold shadow-sm transition">ออกบัตรคิว</button>
             </div>
             <div class="mt-4">
               <h4 class="font-semibold text-xs text-slate-400 uppercase tracking-wider mb-2">คิวที่รออยู่:</h4>
@@ -601,7 +600,7 @@
                 <input type="time" id="res-time" class="border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
               </div>
               <input type="number" id="res-size" placeholder="จำนวนที่นั่ง" min="1" class="w-full border border-slate-200 dark:border-slate-700 p-2.5 rounded-xl text-xs bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none">
-              <button onclick="createReservation()" class="w-full bg-slate-900 dark:bg-slate-800 hover:bg-black text-white py-2.5 rounded-xl text-xs font-semibold shadow-sm transition">บันทึกการจอง</button>
+              <button id="btn-submit-res" onclick="createReservation()" class="w-full bg-slate-900 dark:bg-slate-800 hover:bg-black text-white py-2.5 rounded-xl text-xs font-semibold shadow-sm transition">บันทึกการจอง</button>
             </div>
           </div>
         </div>
@@ -630,8 +629,8 @@
   <script>
     let currentUser = null;
     let currentTable = null;
-    let currentCustomerTable = null;
-    let myActiveQueueTicket = null; // บัตรคิวที่ลูกค้าถืออยู่
+    let currentCustomerTable = localStorage.getItem('restro_customer_table') ? parseInt(localStorage.getItem('restro_customer_table')) : null;
+    let myActiveQueueTicket = localStorage.getItem('restro_my_queue') ? JSON.parse(localStorage.getItem('restro_my_queue')) : null;
     let cachedMenu = [];
     let cachedInventory = [];
     let uploadedImageBase64 = "";
@@ -844,8 +843,6 @@
     function handleLogout() {
       localStorage.removeItem('restro_user');
       currentUser = null;
-      currentCustomerTable = null;
-      myActiveQueueTicket = null;
       document.getElementById('main-app').classList.add('hidden');
       document.getElementById('auth-screen').classList.remove('hidden');
       document.getElementById('login-pass').value = '';
@@ -878,7 +875,7 @@
       if(name === 'qr') loadCustomerQrView();
     }
 
-    // ================= ระบบลูกค้า: ต้องรอเรียกคิวและได้โต๊ะก่อนจึงจะสั่งได้ =================
+    // ================= ระบบลูกค้า: ปรากฏหลังแอดมินเรียกคิวและจัดโต๊ะให้แล้ว =================
     async function loadCustomerQrView() {
       const gateScreen = document.getElementById('customer-queue-gate-screen');
       const orderScreen = document.getElementById('customer-order-active-screen');
@@ -892,21 +889,19 @@
         const waitBox = document.getElementById('gate-waiting-box');
 
         if (!myActiveQueueTicket) {
-          // ยังไม่มีบัตรคิว
           needBox.classList.remove('hidden');
           waitBox.classList.add('hidden');
           if (currentUser) {
             document.getElementById('gate-cust-name').value = currentUser.name;
           }
         } else {
-          // มีบัตรคิวแล้ว กำลังรอเรียก
           needBox.classList.add('hidden');
           waitBox.classList.remove('hidden');
           document.getElementById('gate-my-qid').innerText = myActiveQueueTicket.queue_id;
           document.getElementById('gate-my-name').innerText = `${myActiveQueueTicket.name} (${myActiveQueueTicket.party_size} ท่าน)`;
         }
       } else {
-        // แอดมินเรียกคิวและจัดโต๊ะให้แล้ว ปลดล็อกหน้าสั่งอาหารประจำโต๊ะ
+        // แอดมินเรียกคิวและจัดโต๊ะให้แล้ว -> ปลดล็อกหน้าสั่งอาหารประจำโต๊ะทันที
         gateScreen.classList.add('hidden');
         orderScreen.classList.remove('hidden');
         document.getElementById('cust-locked-table-title').innerText = `โต๊ะหมายเลข ${currentCustomerTable}`;
@@ -917,24 +912,35 @@
     }
 
     async function customerGetTicketAtGate() {
+      const btn = document.getElementById('btn-gate-get-ticket');
       const name = document.getElementById('gate-cust-name').value.trim();
       const size = parseInt(document.getElementById('gate-party-size').value) || 2;
       if (!name) return showToast('กรุณาระบุชื่อของคุณ', 'error');
 
-      const res = await apiFetch('/api/queue/ticket', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ name: name, party_size: size })
-      });
-      const data = await res.json();
-      myActiveQueueTicket = data;
-      showToast(`รับบัตรคิว ${data.queue_id} เรียบร้อย! กรุณารอพนักงานเรียกคิวและจัดโต๊ะ`, 'success');
-      loadCustomerQrView();
+      btn.disabled = true;
+      btn.innerText = 'กำลังออกบัตรคิว...';
+
+      try {
+        const res = await apiFetch('/api/queue/ticket', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ name: name, party_size: size })
+        });
+        const data = await res.json();
+        myActiveQueueTicket = data;
+        localStorage.setItem('restro_my_queue', JSON.stringify(data));
+        showToast(`รับบัตรคิว ${data.queue_id} เรียบร้อย! รอพนักงานเรียกคิวและจัดโต๊ะ`, 'success');
+        loadCustomerQrView();
+      } finally {
+        btn.disabled = false;
+        btn.innerText = 'กดรับบัตรคิวเดี๋ยวนี้';
+      }
     }
 
     function cancelMyQueue() {
       if(!confirm('คุณต้องการยกเลิกบัตรคิวนี้หรือไม่?')) return;
       myActiveQueueTicket = null;
+      localStorage.removeItem('restro_my_queue');
       loadCustomerQrView();
     }
 
@@ -1046,6 +1052,7 @@
       }
     }
 
+    // ================= Menu Logic =================
     async function loadCatalogMenus() {
       const search = document.getElementById('menu-search-input').value.trim();
       const cat = document.getElementById('menu-cat-filter').value;
@@ -1070,7 +1077,7 @@
         }).join(', ') : 'ไม่มีสูตรตัดสต็อก';
 
         let imgHtml = m.image ? 
-          `<img src="${m.image}" alt="${m.name}" class="h-44 w-full object-cover">` : 
+          `<img src="${m.image}" alt="${m.name}" class="h-44 w-full object-cover" onerror="this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500&auto=format&fit=crop&q=80';">` : 
           `<div class="h-44 w-full bg-slate-100 dark:bg-slate-800 flex flex-col items-center justify-center text-slate-300 dark:text-slate-600"><i class="fa-solid fa-bowl-food text-3xl mb-1"></i><span class="text-[10px] text-slate-400 font-medium">ไม่มีรูปภาพ</span></div>`;
 
         return `
@@ -1418,6 +1425,7 @@
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ capacity: capacity })
         });
+        const data = await res.json();
         if (res.ok) {
           showToast(`เพิ่มโต๊ะสำเร็จ!`, 'success');
           loadTables();
@@ -1453,7 +1461,7 @@
       document.getElementById('pos-menu-list').innerHTML = cachedMenu.map(m => `
         <div class="border border-slate-200/80 dark:border-slate-800 p-2.5 rounded-2xl text-center bg-slate-50/50 dark:bg-slate-800/50 hover:bg-white dark:hover:bg-slate-800 transition flex flex-col justify-between">
           <div class="h-20 w-full mb-1.5 overflow-hidden rounded-xl bg-slate-200 dark:bg-slate-700">
-            ${m.image ? `<img src="${m.image}" alt="${m.name}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center text-slate-400 text-xs"><i class="fa-solid fa-utensils"></i></div>`}
+            ${m.image ? `<img src="${m.image}" alt="${m.name}" class="w-full h-full object-cover" onerror="this.src='https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500&auto=format&fit=crop&q=80';">` : `<div class="w-full h-full flex items-center justify-center text-slate-400 text-xs"><i class="fa-solid fa-utensils"></i></div>`}
           </div>
           <div>
             <div class="font-bold text-xs truncate text-slate-800 dark:text-white">${m.name}</div>
@@ -1542,7 +1550,7 @@
       }
     }
 
-    // ================= ระบบคิว: แอดมินกดเรียกคิวพร้อมจัดโต๊ะให้ลูกค้า =================
+    // ================= ระบบคิว: แอดมินกดเรียกคิวและจัดโต๊ะให้ลูกค้า =================
     async function loadQueues() {
       const res = await apiFetch('/api/queues');
       const qs = await res.json();
@@ -1577,23 +1585,45 @@
     }
 
     async function createQueueTicket() {
+      // ตรวจสอบว่ามีบัตรคิวรออยู่แล้วหรือไม่ (ป้องกันการกดขอคิวซ้ำซ้อน)
+      if (myActiveQueueTicket && myActiveQueueTicket.status === 'รอเรียก') {
+        return showToast(`คุณมีบัตรคิวหมายเลข ${myActiveQueueTicket.queue_id} อยู่แล้ว กรุณารอเรียกคิว`, 'error');
+      }
+
+      const btn = document.getElementById('btn-issue-queue');
       const name = document.getElementById('q-name').value.trim();
       const size = parseInt(document.getElementById('q-size').value);
       if(!name || isNaN(size) || size <= 0) return showToast('กรุณากรอกชื่อและจำนวนคนให้ถูกต้อง', 'error');
       
-      const res = await apiFetch('/api/queue/ticket', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ name: name, party_size: size })
-      });
-      const data = await res.json();
-      showToast(`ออกบัตรคิวสำเร็จ! หมายเลขคือ ${data.queue_id}`, 'success');
-      document.getElementById('q-name').value = '';
-      document.getElementById('q-size').value = '';
-      loadQueues();
+      btn.disabled = true;
+      try {
+        const res = await apiFetch('/api/queue/ticket', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ name: name, party_size: size })
+        });
+        const data = await res.json();
+        myActiveQueueTicket = data;
+        localStorage.setItem('restro_my_queue', JSON.stringify(data));
+        showToast(`ออกบัตรคิวสำเร็จ! หมายเลขคือ ${data.queue_id}`, 'success');
+        document.getElementById('q-name').value = '';
+        document.getElementById('q-size').value = '';
+        loadQueues();
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function callQueue(qid) {
+      const res = await apiFetch(`/api/queue/${qid}/status?status=เรียกแล้ว`, { method: 'POST' });
+      if(res.ok) {
+        showToast(`เรียกลำดับคิว ${qid} แล้ว`, 'info');
+        loadQueues();
+      }
     }
 
     async function createReservation() {
+      const btn = document.getElementById('btn-submit-res');
       const p = {
         name: document.getElementById('res-name').value.trim(),
         phone: document.getElementById('res-phone').value.trim(),
@@ -1601,15 +1631,23 @@
         time: document.getElementById('res-time').value,
         party_size: parseInt(document.getElementById('res-size').value)
       };
-      if(!p.name || !p.phone || isNaN(p.party_size) || p.party_size <= 0) return showToast('กรุณากรอกข้อมูลให้ครบถ้วน', 'error');
+      if(!p.name || !p.phone) return showToast('กรุณากรอกชื่อและเบอร์โทรศัพท์', 'error');
+      if(isNaN(p.party_size) || p.party_size <= 0) return showToast('จำนวนที่นั่งต้องมากกว่า 0', 'error');
       
-      const res = await apiFetch('/api/reservations', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(p)
-      });
-      if(res.ok) {
-        showToast('บันทึกการจองสำเร็จ!', 'success');
+      btn.disabled = true;
+      try {
+        const res = await apiFetch('/api/reservations', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(p)
+        });
+        if(res.ok) {
+          showToast('บันทึกการจองสำเร็จ!', 'success');
+          document.getElementById('res-name').value = '';
+          document.getElementById('res-phone').value = '';
+        }
+      } finally {
+        btn.disabled = false;
       }
     }
 
@@ -1684,6 +1722,16 @@
       }
 
       showToast('เช็คบิลสำเร็จ! ยอดขายถูกบันทึกแล้ว', 'success');
+      
+      // ถ้าลูกค้าโต๊ะที่เช็คบิลอยู่หน้าจอ ให้ปลดล็อกโต๊ะออก
+      if (currentCustomerTable === tid) {
+        currentCustomerTable = null;
+        myActiveQueueTicket = null;
+        localStorage.removeItem('restro_customer_table');
+        localStorage.removeItem('restro_my_queue');
+        loadCustomerQrView();
+      }
+
       loadTables();
       loadCheckoutTables();
       await loadDashboard();
@@ -1760,10 +1808,11 @@
           loadCustomerTableOrders();
         }
       } else if(ev.type === 'QUEUE_CALLED') {
-        // เมื่อแอดมินกดเรียกคิว หากตรงกับบัตรคิวที่ลูกค้าถืออยู่ จะปลดล็อกหน้าสั่งอาหารทันที
+        // แอดมินกดเรียกคิวและจัดโต๊ะให้: ปลดล็อกหน้าสั่งอาหารทันที
         if (myActiveQueueTicket && myActiveQueueTicket.queue_id === ev.data.queue_id) {
           currentCustomerTable = ev.data.table_id;
-          showToast(`🎉 ถึงคิวของคุณแล้ว! เชิญที่โต๊ะ ${ev.data.table_id} เริ่มสั่งอาหารได้เลย`, 'success');
+          localStorage.setItem('restro_customer_table', currentCustomerTable);
+          showToast(`🎉 ถึงคิวของคุณแล้ว! พนักงานจัดโต๊ะ ${ev.data.table_id} ให้คุณ เริ่มสั่งอาหารได้เลย`, 'success');
           loadCustomerQrView();
         }
         loadQueues();
